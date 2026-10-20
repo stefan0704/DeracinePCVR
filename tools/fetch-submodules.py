@@ -14,16 +14,16 @@ def fetch_submodules():
             subpath = cfg[s]['path'].replace('\\', '/')
             full_path = os.path.join('src', subpath)
             branch = cfg[s].get('branch')
+            url = cfg[s]['url']
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
             if not os.path.exists(full_path) or not os.listdir(full_path):
                 print(f"Fetching {subpath} from {url} (branch: {branch}) ...")
-                cmd = ['git', 'clone', '--depth', '1', '--recurse-submodules', '--shallow-submodules']
+                cmd = ['git', 'clone', '--depth', '1', '--recurse-submodules']
                 if branch:
                     cmd.extend(['-b', branch])
                 cmd.extend([url, full_path])
                 subprocess.run(cmd, check=True)
             else:
-                if os.path.exists(os.path.join(full_path, '.git')):
-                    subprocess.run(['git', '-C', full_path, 'submodule', 'update', '--init', '--recursive', '--depth', '1'], check=False)
                 print(f"Submodule already present: {subpath}")
 
 if __name__ == '__main__':
