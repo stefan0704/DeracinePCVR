@@ -187,6 +187,10 @@ Installing this entire 10GB toolchain locally on user machines is heavy and slow
 - All other 40+ third-party dependencies are submodules defined in `src/.gitmodules`.
 - The helper script [`tools/fetch-submodules.py`](file:///e:/DeracinePCVR/tools/fetch-submodules.py) reads `src/.gitmodules` and shallow-clones (`--depth 1 --recurse-submodules`) only what is needed before CMake configuration.
 
+### 5.3 CI Diagnostics & Resolutions Log
+- **Run #1 & #2**: Failed due to missing `GetGitRevisionDescription.cmake` and externals ignored by `.gitignore`. Resolved by explicitly tracking native core externals (`cmake-modules/`, `openxr-sdk/`, `gcn/`, etc.).
+- **Run #3**: Failed in `tools/fetch-submodules.py` with `NameError: name 'url' is not defined` (unassigned loop variable). Fixed by binding `url = cfg[s]['url']` and ensuring directory creation `os.makedirs`. Also added `tools/**` and `.github/workflows/**` to the workflow trigger path filters.
+
 ---
 
 ## 6. Next Actions Checklist
