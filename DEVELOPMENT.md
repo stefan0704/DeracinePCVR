@@ -190,6 +190,7 @@ Installing this entire 10GB toolchain locally on user machines is heavy and slow
 ### 5.3 CI Diagnostics & Resolutions Log
 - **Run #1 & #2**: Failed due to missing `GetGitRevisionDescription.cmake` and externals ignored by `.gitignore`. Resolved by explicitly tracking native core externals (`cmake-modules/`, `openxr-sdk/`, `gcn/`, etc.).
 - **Run #3**: Failed in `tools/fetch-submodules.py` with `NameError: name 'url' is not defined` (unassigned loop variable). Fixed by binding `url = cfg[s]['url']` and ensuring directory creation `os.makedirs`. Also added `tools/**` and `.github/workflows/**` to the workflow trigger path filters.
+- **Run #4**: Failed during compilation of `ImGuiFileDialog.cpp` (`error: no member named 'ChildFlagsSet' in 'ImGuiNextWindowData'`). Root cause: `src/.gitmodules` lacked `branch = shadps4` for `externals/ImGuiFileDialog`, causing Git to clone the upstream `master` branch (which has breaking ImGui API differences) instead of the patched `shadps4` branch. Fixed by specifying `branch = shadps4` in `src/.gitmodules`.
 
 ---
 
