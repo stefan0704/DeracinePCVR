@@ -558,7 +558,7 @@ s32 PS4_SYSV_ABI sceVrTrackerRecalibrate(const OrbisVrTrackerRecalibrateParam* p
         break;
     }
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_MOVE: {
-        if (g_move_handle == -1) {
+        if (g_move_handles[0] == -1 && g_move_handles[1] == -1) {
             return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_REGISTERED;
         }
         break;
@@ -728,8 +728,8 @@ s32 PS4_SYSV_ABI sceVrTrackerUnregisterDevice(const s32 handle) {
         // (The next registered, if any, is the player's from now on.)
         std::scoped_lock lock{g_pads_mutex};
         std::erase_if(g_pads, [&](const PadRegistration& pad) { return pad.handle == handle; });
-    } else if (handle == g_move_handle) {
-        g_move_handle = -1;
+    } else if (int idx = FindMoveIndex(handle); idx != -1) {
+        g_move_handles[idx] = -1;
     } else if (handle == g_gun_handle) {
         g_gun_handle = -1;
     } else {
