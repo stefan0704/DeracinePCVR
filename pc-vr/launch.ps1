@@ -1,4 +1,4 @@
-﻿# Starts Déraciné in the emulator for a VR headset connected to this PC (OpenXR)
+# Starts Déraciné in the emulator for a VR headset connected to this PC (OpenXR)
 # Desktop, or anything else with an OpenXR runtime), and tells what is going on while it runs.
 # Started by "Play Deracine VR.bat"; settings are in settings.txt
 # main ones can be chosen in a small window before the game starts.
@@ -996,7 +996,13 @@ if (Test-Path $log) { Copy-Item $log (Join-Path $logDir "shad_log.prev.txt") -Fo
 # (In this console, with what it prints kept out of the way: a window style given here would
 # also be the game window's.)
 $startedAt = Get-Date
-$process = Start-Process -FilePath $emulator -ArgumentList @("-g", "`"$game`"") -WorkingDirectory $here `
+$gameArgs = @("-g", "`"$game`"")
+$titleId = if ($info.ContainsKey("TITLE_ID")) { $info["TITLE_ID"] } else { "CUSA11919" }
+$patchFile = Join-Path $here "user\patches\$titleId.xml"
+if (Test-Path $patchFile) {
+    $gameArgs += @("-p", "`"$patchFile`"")
+}
+$process = Start-Process -FilePath $emulator -ArgumentList $gameArgs -WorkingDirectory $here `
     -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $logDir "console.txt") `
     -RedirectStandardError (Join-Path $logDir "console-errors.txt")
 # (Without this the exit code is not to be had later.)
