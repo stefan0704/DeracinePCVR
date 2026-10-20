@@ -36,6 +36,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
+      - name: Fetch Submodules
+        run: python tools/fetch-submodules.py
+
       - name: Configure CMake
         run: |
           cmake -G Ninja -B build -S src `

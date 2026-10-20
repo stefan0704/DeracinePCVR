@@ -17,5 +17,11 @@ bin/
 *.exe.stackdump
 
 # Ignore third-party submodule source trees (fetched via git submodules or CMake)
-src/externals/
+src/externals/*
+!src/externals/CMakeLists.txt
+!src/externals/cmake-modules/
+!src/externals/openxr-sdk/
+!src/externals/gcn/
+!src/externals/renderdoc/
+!src/externals/stb/
 
