@@ -1,4 +1,4 @@
-﻿# Game dumps and packages (Never commit user game files)
+# Game dumps and packages (Never commit user game files)
 games/*
 !games/PUT YOUR GAME HERE.txt
 
@@ -7,6 +7,7 @@ pc-vr/user/log/
 pc-vr/user/home/
 pc-vr/user/cache/
 pc-vr/user/crash_dumps/
+pc-vr/user/download/
 *.log
 
 # Build artifacts

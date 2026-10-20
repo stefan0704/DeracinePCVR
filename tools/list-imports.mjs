@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const aerolib = readFileSync(resolve(here, "../shadps4-arm64-main/scripts/aerolib.inl"), "latin1");
+const aerolib = readFileSync(resolve(here, "../src/scripts/aerolib.inl"), "latin1");
 const names = new Map();
 for (const m of aerolib.matchAll(/STUB\("([^"]{11})",\s*([A-Za-z0-9_]+)\)/g)) names.set(m[1], m[2]);
 

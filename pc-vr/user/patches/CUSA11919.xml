@@ -1,0 +1,10 @@
+<Patch>
+    <TitleID>
+        <ID>CUSA11919</ID>
+    </TitleID>
+    <Metadata Title="Deracine" Name="Bypass SNDX Compressor Crash" Author="DeracinePCVR" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <PatchList>
+            <Line Type="bytes" Address="00c465b0" Value="31c0c39090"/>
+        </PatchList>
+    </Metadata>
+</Patch>
