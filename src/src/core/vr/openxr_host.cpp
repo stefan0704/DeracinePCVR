@@ -1379,6 +1379,64 @@ struct OpenXrHost::Impl {
             Runtime::Instance().ReleasePad();
         }
         controller_tracked = located;
+
+        for (int hand = 0; hand < 2; ++hand) {
+            if (grip_spaces[hand] == XR_NULL_HANDLE) {
+                continue;
+            }
+            XrSpaceVelocity hand_velocity{XR_TYPE_SPACE_VELOCITY};
+            XrSpaceLocation hand_location{XR_TYPE_SPACE_LOCATION};
+            hand_location.next = &hand_velocity;
+            const bool hand_located =
+                XR_SUCCEEDED(xrLocateSpace(grip_spaces[hand], local_space, time, &hand_location)) &&
+                (hand_location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0 &&
+                (hand_location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+            DeviceState hand_state{};
+            if (hand_located) {
+                hand_state.pose.position = {hand_location.pose.position.x, hand_location.pose.position.y,
+                                            hand_location.pose.position.z};
+                hand_state.pose.orientation =
+                    Normalize({hand_location.pose.orientation.x, hand_location.pose.orientation.y,
+                               hand_location.pose.orientation.z, hand_location.pose.orientation.w});
+                if ((hand_velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0) {
+                    hand_state.linear_velocity = {hand_velocity.linearVelocity.x,
+                                                  hand_velocity.linearVelocity.y,
+                                                  hand_velocity.linearVelocity.z};
+                }
+                if ((hand_velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0) {
+                    hand_state.angular_velocity = {hand_velocity.angularVelocity.x,
+                                                   hand_velocity.angularVelocity.y,
+                                                   hand_velocity.angularVelocity.z};
+                }
+                hand_state.tracked = true;
+            }
+            Runtime::Instance().UpdateHand(hand, hand_state);
+        }
+
+        // Left hand (hand 0):
+        u16 left_move_buttons = 0;
+        const u8 left_move_trigger = static_cast<u8>(std::clamp(left_trigger * 255.0f, 0.0f, 255.0f));
+        if (left_trigger > 0.25f) left_move_buttons |= (1 << 1); // Trigger digital click
+        if (left_grip > 0.5f || left_stick_in || move.y > 0.5f) left_move_buttons |= (1 << 2); // Move button (FaceButton5)
+        if (circle) left_move_buttons |= (1 << 7); // Square / FaceButton1 (X on Touch)
+        if (triangle) left_move_buttons |= (1 << 4); // Triangle / FaceButton4 (Y on Touch)
+        if (pressed(act_options)) left_move_buttons |= (1 << 3); // Start/Options
+        if (move.x < -0.5f) left_move_buttons |= (1 << 7); // Turn left / Square
+        if (move.x > 0.5f) left_move_buttons |= (1 << 4); // Turn right / Triangle
+
+        // Right hand (hand 1):
+        u16 right_move_buttons = 0;
+        const u8 right_move_trigger = static_cast<u8>(std::clamp(right_trigger * 255.0f, 0.0f, 255.0f));
+        if (right_trigger > 0.25f) right_move_buttons |= (1 << 1); // Trigger digital click
+        if (right_grip > 0.5f || right_stick_in || finger.y > 0.5f) right_move_buttons |= (1 << 2); // Move button (FaceButton5)
+        if (cross) right_move_buttons |= (1 << 6); // Cross / FaceButton2 (A on Touch)
+        if (square) right_move_buttons |= (1 << 5); // Circle / FaceButton3 (B on Touch)
+        if (finger.x < -0.5f) right_move_buttons |= (1 << 6); // Cross
+        if (finger.x > 0.5f) right_move_buttons |= (1 << 5); // Circle
+
+        Runtime::Instance().UpdateHandInput(0, left_move_buttons, left_move_trigger);
+        Runtime::Instance().UpdateHandInput(1, right_move_buttons, right_move_trigger);
+
         ApplyRumble(true);
     }
 
@@ -1389,7 +1447,10 @@ struct OpenXrHost::Impl {
         if (!actions_ready) {
             return;
         }
-        const u32 wanted = on ? rumble_wanted.load(std::memory_order_relaxed) : 0;
+        const u8 hand_rumble_left = Runtime::Instance().GetHandVibration(0);
+        const u8 hand_rumble_right = Runtime::Instance().GetHandVibration(1);
+        const u32 wanted = on ? (rumble_wanted.load(std::memory_order_relaxed) |
+                                 (u32{hand_rumble_left} << 16) | (u32{hand_rumble_right} << 24)) : 0;
         const auto now = Clock::now();
         // A vibration is asked for by its length: one that goes on is asked for again.
         if (wanted == rumble_applied &&
@@ -1401,8 +1462,10 @@ struct OpenXrHost::Impl {
         const float heavy = static_cast<float>(wanted & 0xff) / 255.0f;
         const float light = static_cast<float>((wanted >> 8) & 0xff) / 255.0f;
         for (int hand = 0; hand < 2; ++hand) {
-            const float amplitude =
+            const float move_vib = static_cast<float>(hand == 0 ? hand_rumble_left : hand_rumble_right) / 255.0f;
+            const float pad_vib =
                 hand == 0 ? std::max(heavy, light * 0.4f) : std::max(light, heavy * 0.4f);
+            const float amplitude = std::max(move_vib, pad_vib);
             XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
             info.action = act_rumble;
             info.subactionPath = hand_paths[hand];

@@ -41,9 +41,18 @@ struct PadRegistration {
 };
 static std::vector<PadRegistration> g_pads;
 static std::mutex g_pads_mutex;
-static s32 g_move_handle = -1;
+static std::array<s32, 2> g_move_handles{-1, -1};
 static s32 g_gun_handle = -1;
 static s32 g_hmd_handle = -1;
+
+static int FindMoveIndex(s32 handle) {
+    for (int i = 0; i < 2; ++i) {
+        if (g_move_handles[i] == handle) {
+            return i;
+        }
+    }
+    return -1;
+}
 
 /// The registration of a DualShock 4 handle, if it is one.
 static std::optional<PadRegistration> FindPad(s32 handle) {
@@ -300,10 +309,23 @@ s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceInternal(const OrbisVrTrackerDeviceTy
         break;
     }
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_MOVE: {
-        if (g_move_handle != -1) {
+        for (int i = 0; i < 2; ++i) {
+            if (g_move_handles[i] == handle) {
+                return ORBIS_VR_TRACKER_ERROR_DEVICE_ALREADY_REGISTERED;
+            }
+        }
+        bool registered = false;
+        for (int i = 0; i < 2; ++i) {
+            if (g_move_handles[i] == -1) {
+                g_move_handles[i] = handle;
+                registered = true;
+                LOG_INFO(Lib_VrTracker, "Registered Move controller handle {:#x} as hand {}", handle, i);
+                break;
+            }
+        }
+        if (!registered) {
             return ORBIS_VR_TRACKER_ERROR_DEVICE_ALREADY_REGISTERED;
         }
-        g_move_handle = handle;
         break;
     }
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_GUN: {
@@ -352,7 +374,9 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
     const auto pad_registration = FindPad(handle);
     // (Another player's controller is registered, but nothing tracks it.)
     const bool is_pad = pad_registration.has_value() && IsPlayersPad(handle);
-    if (!is_hmd && !pad_registration && handle != g_move_handle && handle != g_gun_handle) {
+    const int move_index = FindMoveIndex(handle);
+    const bool is_move = move_index != -1;
+    if (!is_hmd && !pad_registration && !is_move && handle != g_gun_handle) {
         return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_REGISTERED;
     }
 
@@ -361,14 +385,15 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
     result->user_frame_number = param->user_frame_number;
     result->camera_orientation_w = 1.0f;
 
-    // Only the headset and the first controller are tracked by the host.
-    if (!HeadsetConnected() || (!is_hmd && !is_pad)) {
+    // Only the headset, first pad, and Move controllers are tracked by the host.
+    if (!HeadsetConnected() || (!is_hmd && !is_pad && !is_move)) {
         result->status = OrbisVrTrackerStatus::ORBIS_VR_TRACKER_STATUS_NOT_TRACKING;
         return ORBIS_OK;
     }
 
     auto& runtime = Core::Vr::Runtime::Instance();
-    const Core::Vr::DeviceState state = is_hmd ? runtime.GetHead() : runtime.GetPad();
+    const Core::Vr::DeviceState state =
+        is_hmd ? runtime.GetHead() : (is_move ? runtime.GetHand(move_index) : runtime.GetPad());
 
     static std::atomic<u32> result_calls{};
     if (const u32 call = result_calls.fetch_add(1); call < 4 || call % 1200 == 0) {
@@ -390,11 +415,15 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         OrbisVrTrackerRecalibrateNecessityType::ORBIS_VR_TRACKER_RECALIBRATE_NECESSITY_NOTHING;
     result->playarea_brightness_risk =
         OrbisVrTrackerPlayareaBrightnessRiskType::ORBIS_VR_TRACKER_PLAYAREA_BRIGHTNESS_RISK_LOW;
-    result->led_color = is_pad ? pad_registration->color
-                               : OrbisVrTrackerLedColor::ORBIS_VR_TRACKER_LED_COLOR_BLUE;
+    result->led_color =
+        is_pad ? pad_registration->color
+               : (is_move ? (move_index == 0 ? OrbisVrTrackerLedColor::ORBIS_VR_TRACKER_LED_COLOR_RED
+                                             : OrbisVrTrackerLedColor::ORBIS_VR_TRACKER_LED_COLOR_BLUE)
+                          : OrbisVrTrackerLedColor::ORBIS_VR_TRACKER_LED_COLOR_BLUE);
     result->status =
         IsRecalibrating(is_hmd ? OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_HMD
-                               : OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4,
+                               : (is_move ? OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_MOVE
+                                          : OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4),
                         now)
             ? OrbisVrTrackerStatus::ORBIS_VR_TRACKER_STATUS_CALIBRATING
             : OrbisVrTrackerStatus::ORBIS_VR_TRACKER_STATUS_TRACKING;
@@ -409,6 +438,11 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
 
     if (is_pad) {
         WritePose(result->pad_info.device_pose, state.pose);
+        return ORBIS_OK;
+    }
+
+    if (is_move) {
+        WritePose(result->move_info.device_pose, state.pose);
         return ORBIS_OK;
     }
 

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -272,6 +273,18 @@ public:
     DeviceState GetHead();
     DeviceState GetPad();
 
+    struct HandInputState {
+        u16 buttons{0};
+        u8 trigger{0};
+    };
+
+    void UpdateHand(int hand_idx, const DeviceState& host_state);
+    DeviceState GetHand(int hand_idx);
+    void UpdateHandInput(int hand_idx, u16 buttons, u8 trigger);
+    HandInputState GetHandInput(int hand_idx);
+    void SetHandVibration(int hand_idx, u8 intensity);
+    u8 GetHandVibration(int hand_idx);
+
     /// Converts a tracker-space pose handed back by the guest into host space.
     Pose ToHostSpace(const Pose& tracker_pose) const;
 
@@ -360,6 +373,9 @@ private:
     std::function<void(const PadFeedback&)> pad_feedback_listener;
     std::function<void(const PresentedFrame&)> frame_listener;
     u32 frame_counter{};
+    std::array<DeviceState, 2> hands{};
+    std::array<HandInputState, 2> hand_inputs{};
+    std::array<u8, 2> hand_vibrations{};
 };
 
 } // namespace Core::Vr
