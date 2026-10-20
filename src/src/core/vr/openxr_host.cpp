@@ -1189,8 +1189,10 @@ struct OpenXrHost::Impl {
                 buttons |= button;
             }
         };
-        add(pressed(act_cross) || test_press, Buttons::Cross);
-        add(pressed(act_square), Buttons::Square);
+        const bool cross = pressed(act_cross) || test_press;
+        const bool square = pressed(act_square);
+        add(cross, Buttons::Cross);
+        add(square, Buttons::Square);
         // The left controller's two buttons together are not circle and triangle: they blow
         // into the microphone, for as long as they are held (Input::SetBlowing).
         const bool circle = pressed(act_circle);
