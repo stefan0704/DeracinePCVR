@@ -1,0 +1,21 @@
+{
+  "files.watcherExclude": {
+    "**/.git/**": true,
+    "**/externals/**": true,
+    "**/build/**": true,
+    "**/out/**": true,
+    "**/CUSA*/**": true,
+    "**/*.pkg": true,
+    "**/*.pak": true
+  },
+  "search.exclude": {
+    "**/externals/**": true,
+    "**/build/**": true,
+    "**/out/**": true,
+    "**/CUSA*/**": true
+  },
+  "C_Cpp.files.exclude": {
+    "**/externals/**": true,
+    "**/build/**": true
+  }
+}
