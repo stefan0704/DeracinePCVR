@@ -1,0 +1,20 @@
+﻿# Game dumps and packages (Never commit user game files)
+games/*
+!games/PUT YOUR GAME HERE.txt
+
+# Emulator user data, logs and saves
+pc-vr/user/log/
+pc-vr/user/home/
+pc-vr/user/cache/
+pc-vr/user/crash_dumps/
+*.log
+
+# Build artifacts
+build/
+bin/
+*.obj
+*.exe.stackdump
+
+# Ignore third-party submodule source trees (fetched via git submodules or CMake)
+src/externals/
+
