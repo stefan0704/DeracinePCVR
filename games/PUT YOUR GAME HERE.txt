@@ -1,0 +1,9 @@
+﻿Déraciné PC VR
+================
+
+Coloca aquí tu copia de Déraciné obtenida legalmente desde tu propia PlayStation 4:
+- Ya sea la carpeta descomprimida del juego (la que contiene eboot.bin, gameproject, sce_sys, etc.)
+  nombrada como CUSA11919 (EE.UU.), CUSA10860 (Europa) o CUSA11833 (Japón).
+- O el archivo de paquete .pkg generado a partir de tu propio volcado.
+
+NO se distribuyen ni incluyen archivos del juego con este proyecto.
