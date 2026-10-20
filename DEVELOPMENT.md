@@ -194,13 +194,14 @@ Installing this entire 10GB toolchain locally on user machines is heavy and slow
 - **Run #5**: Reached deep build stage (~19 mins, 11,134 lines of log) with all externals and VR runtime compiling smoothly. Failed solely on `ajm_at9.cpp` (`error: no matching function for call to 'Atrac9Decode'`) because upstream `ext-LibAtrac9` master changed function signatures from 5 to 6 arguments (`int atrac9BufferSize`). Fixed by tracking the verified 250KB `LibAtrac9` tree natively in the repository under `.gitignore` whitelist and removing it from `.gitmodules`.
 - **Run #6**: Passed all externals and `LibAtrac9`/`ajm_at9.cpp` compilation. Failed at `vr_tracker.cpp` due to two leftover `g_move_handle` references (after refactoring to `g_move_handles` array). Fixed by replacing with `g_move_handles` check and `FindMoveIndex(handle)` removal logic.
 - **Run #7**: Reached end of build. Failed at `openxr_host.cpp` (11,285 lines of log) with `undeclared identifier 'cross'` and `'square'` because `pressed(act_cross)` was passed into `add()` without storing into local boolean variables. Fixed by declaring `const bool cross` and `const bool square`.
+- **Run #8 (SUCCESS)**: Clean build of the entire project! Ninja compiled all units with `ccache`, linked `shadPS4.exe`, and successfully generated the release artifact `shadps4-deracine-pcvr`.
 
 ---
 
 ## 6. Next Actions Checklist
 
-1. [ ] **Verify CI Build**: Ensure `tools/fetch-submodules.py` and `.github/workflows/build-windows.yml` successfully complete and generate the release artifact `shadps4-deracine-pcvr`.
-2. [ ] **Deploy Executable**: Download the generated `shadPS4.exe` artifact and copy it to `pc-vr/shadps4.exe`.
+1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact (32.37 MB compressed / 69.4 MB executable).
+2. [x] **Deploy Executable**: Downloaded and deployed to `pc-vr/shadPS4.exe`. Verified standalone execution with `--help`.
 3. [ ] **VR Headset Testing**:
    - Start OpenXR runtime (Virtual Desktop / SteamVR / Meta Quest Link).
    - Launch with `Play Deracine VR.bat` (or `powershell -ExecutionPolicy Bypass -File pc-vr/launch.ps1`).
