@@ -1068,4 +1068,60 @@ void Runtime::NotifyFramePresented(const PresentedFrame& frame) {
     }
 }
 
+void Runtime::UpdateHand(int hand_idx, const DeviceState& host_state) {
+    if (hand_idx < 0 || hand_idx >= 2) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    const u64 sequence = hands[hand_idx].sequence + 1;
+    hands[hand_idx] = host_state;
+    hands[hand_idx].pose.position = PositionToTracker(host_state.pose.position);
+    hands[hand_idx].pose.orientation =
+        Normalize(Multiply(Conjugate(seat_yaw), host_state.pose.orientation));
+    hands[hand_idx].linear_velocity = DirectionToTracker(host_state.linear_velocity);
+    hands[hand_idx].angular_velocity = DirectionToTracker(host_state.angular_velocity);
+    hands[hand_idx].sequence = sequence;
+    hands[hand_idx].tracked = host_state.tracked;
+}
+
+DeviceState Runtime::GetHand(int hand_idx) {
+    if (hand_idx < 0 || hand_idx >= 2) {
+        return {};
+    }
+    std::scoped_lock lock{mutex};
+    return hands[hand_idx];
+}
+
+void Runtime::UpdateHandInput(int hand_idx, u16 buttons, u8 trigger) {
+    if (hand_idx < 0 || hand_idx >= 2) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    hand_inputs[hand_idx] = {buttons, trigger};
+}
+
+Runtime::HandInputState Runtime::GetHandInput(int hand_idx) {
+    if (hand_idx < 0 || hand_idx >= 2) {
+        return {};
+    }
+    std::scoped_lock lock{mutex};
+    return hand_inputs[hand_idx];
+}
+
+void Runtime::SetHandVibration(int hand_idx, u8 intensity) {
+    if (hand_idx < 0 || hand_idx >= 2) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    hand_vibrations[hand_idx] = intensity;
+}
+
+u8 Runtime::GetHandVibration(int hand_idx) {
+    if (hand_idx < 0 || hand_idx >= 2) {
+        return 0;
+    }
+    std::scoped_lock lock{mutex};
+    return hand_vibrations[hand_idx];
+}
+
 } // namespace Core::Vr
