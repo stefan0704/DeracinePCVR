@@ -8,6 +8,9 @@ pc-vr/user/home/
 pc-vr/user/cache/
 pc-vr/user/crash_dumps/
 pc-vr/user/download/
+pc-vr/user/imgui.ini
+pc-vr/user/play_time.txt
+pc-vr/user/vr_headset_fov.json
 *.log
 
 # Build artifacts

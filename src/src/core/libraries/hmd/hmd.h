@@ -102,6 +102,16 @@ struct OrbisHmdReprojectionParam {
     u8 flags;
 };
 
+/// Parameters for 2D VR reprojection (splash screen, 2D UI, cinematics in headset).
+struct OrbisHmdReprojection2dVrParam {
+    const void* texture;           ///< sce::Gnm::Texture (AmdGpu::Image)
+    const void* sampler;           ///< sce::Gnm::Sampler
+    OrbisHmdReprojectionEyeUv uv;  ///< Scale and offset
+    u64* frame_label;
+    u32 timeout;
+    u32 padding;
+};
+
 /// Head pose the frame was rendered with, copied by the title from its tracker result.
 struct OrbisHmdReprojectionTrackerState {
     float position[3];
@@ -140,7 +150,8 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart(Libraries::Kernel::OrbisKer
 s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
                                          const OrbisHmdReprojectionTrackerState* tracker_state,
                                          s64 flip_arg, s32 option);
-s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr();
+s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam* param,
+                                             s64 flip_arg, s32 option);
 s32 PS4_SYSV_ABI sceHmdReprojectionStartCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartLiveCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer2();
