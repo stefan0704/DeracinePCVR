@@ -24,4 +24,7 @@ src/externals/*
 !src/externals/gcn/
 !src/externals/renderdoc/
 !src/externals/stb/
+!src/externals/aacdec/
+src/externals/aacdec/*
+!src/externals/aacdec/CMakeLists.txt
 

@@ -1,4 +1,4 @@
-﻿# Déraciné - PC VR
+# Déraciné - PC VR
 
 **Déraciné (PlayStation 4 / PlayStation VR)** adapted for PC VR via OpenXR, running on a specialized fork of the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator.
 
@@ -66,3 +66,11 @@ Special thanks and full credit to:
 | **Face Buttons** | A / B (Right), X / Y (Left) | Cross, Circle, Square, Triangle |
 | **Options / Start** | Menu Button (Left controller) | In-Game Pause / Options |
 | **Tracking** | 6DoF OpenXR Aim & Grip Poses | Hand position and orientation |
+
+---
+
+## Development & Technical Details
+
+For comprehensive developer documentation, reverse engineering findings, memory offsets, and architecture details, see:
+👉 **[DEVELOPMENT.md](DEVELOPMENT.md)**
+
