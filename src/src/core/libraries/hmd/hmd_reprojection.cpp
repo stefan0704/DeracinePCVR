@@ -273,8 +273,76 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam* param,
+                                             s64 flip_arg, s32 option) {
+    if (param == nullptr || param->texture == nullptr) {
+        return ORBIS_HMD_ERROR_PARAMETER_NULL;
+    }
+
+    Libraries::VideoOut::HmdFrame frame{};
+    std::memcpy(&frame.eye_textures[0], param->texture, sizeof(AmdGpu::Image));
+    std::memcpy(&frame.eye_textures[1], param->texture, sizeof(AmdGpu::Image));
+
+    if (param->uv.scale_x > 0.05f && std::isfinite(param->uv.scale_x) &&
+        param->uv.scale_y > 0.05f && std::isfinite(param->uv.scale_y)) {
+        frame.fov = FovFromUv(param->uv);
+    } else {
+        frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
+    }
+
+    if (frame.fov.tan_out <= 0.05f || !std::isfinite(frame.fov.tan_out)) {
+        frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
+    }
+
+    frame.render_pose = Core::Vr::Runtime::Instance().GetHead().pose;
+    frame.flip_arg = flip_arg;
+
+    s32 video_out_handle;
+    u32 frame_number;
+    {
+        std::scoped_lock lock{g_reprojection.mutex};
+        if (!g_reprojection.initialized || g_reprojection.video_out_handle < 0) {
+            return ORBIS_HMD_ERROR_NOT_INITIALIZED;
+        }
+        video_out_handle = g_reprojection.video_out_handle;
+        frame_number = g_reprojection.submitted_frames++;
+        // The reprojection alternates between the two display buffers it was given.
+        frame.display_index = g_reprojection.display_index[frame_number & 1];
+    }
+
+    if (frame_number < 4) {
+        const auto& left = frame.eye_textures[0];
+        LOG_INFO(Lib_Hmd,
+                 "2dVr frame {}: flip_arg = {}, eye {}x{} at {:#x}, tan out/in/top/bottom = "
+                 "{:.4f}/{:.4f}/{:.4f}/{:.4f}, option = {}",
+                 frame_number, flip_arg, left.width + 1, left.height + 1, left.Address(),
+                 frame.fov.tan_out, frame.fov.tan_in, frame.fov.tan_top, frame.fov.tan_bottom,
+                 option);
+        LOG_INFO(Lib_Hmd, "2dVr UV: scale {:.6f}/{:.6f}, offset {:.6f}/{:.6f}",
+                 param->uv.scale_x, param->uv.scale_y, param->uv.offset_x, param->uv.offset_y);
+    }
+
+    Core::GuestCpu::NoteGuestProgress();
+
+    {
+        using Clock = std::chrono::steady_clock;
+        static constexpr auto ReportInterval = std::chrono::seconds{10};
+        static Clock::time_point report_time = Clock::now();
+        static u32 report_frame = 0;
+        const auto now = Clock::now();
+        if (now - report_time >= ReportInterval) {
+            const float seconds = std::chrono::duration<float>(now - report_time).count();
+            LOG_INFO(Lib_Hmd, "{} headset frames so far (2dVr), {:.1f} per second", frame_number,
+                     static_cast<float>(frame_number - report_frame) / seconds);
+            report_time = now;
+            report_frame = frame_number;
+        }
+    }
+
+    const s32 result = Libraries::VideoOut::SubmitHmdFrame(video_out_handle, frame);
+    if (result != ORBIS_OK) {
+        LOG_ERROR(Lib_Hmd, "Could not queue 2dVr headset frame: {:#x}", static_cast<u32>(result));
+    }
     return ORBIS_OK;
 }
 

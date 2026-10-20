@@ -32,3 +32,9 @@
 
 # Desktop mirror view mode: "stereo" (both eyes side-by-side), "spectator" (single eye), "combined"
 #desktop_view=stereo
+resolution=2880
+fps=60
+fov=100
+menu=1
+desktop_view=stereo
+desktop_crop=0

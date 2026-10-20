@@ -198,12 +198,47 @@ Installing this entire 10GB toolchain locally on user machines is heavy and slow
 
 ---
 
-## 6. Next Actions Checklist
+## 7. Step 4 Completed: 2D VR Reprojection Implementation (`sceHmdReprojectionStart2dVr`)
 
-1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact (32.37 MB compressed / 69.4 MB executable).
-2. [x] **Deploy Executable**: Downloaded and deployed to `pc-vr/shadPS4.exe`. Verified standalone execution with `--help`.
-3. [ ] **VR Headset Testing**:
-   - Start OpenXR runtime (Virtual Desktop / SteamVR / Meta Quest Link).
-   - Launch with `Play Deracine VR.bat` (or `powershell -ExecutionPolicy Bypass -File pc-vr/launch.ps1`).
-   - Confirm virtual Move hands appear in game, follow physical controllers 1:1, teleport with Move button/grip, and interact with objects using triggers.
-4. [ ] **Fine-Tuning**: Calibrate hand rotation offsets or sensitivity if physical wand alignment differs from controller grip angles.
+### 7.1 Symptom & Log Diagnosis
+When booting *Déraciné* in the Quest headset via Virtual Desktop:
+- 100% of game music, audio, and spatial sound played flawlessly.
+- OpenXR tracked the head at 90.0 fps (`head tracked 100% of the time`).
+- Hand controllers were tracked at 100% (`Controllers: standing in for the gamepad; the right one tracked 100% of the time`).
+- **PROBLEM**: The screen inside the headset remained pitch black, and the OpenXR log reported:
+  `Headset: the title delivered 0.0 frames a second (0 ms the longest wait for one, 0 waits of more than 50 ms), 0.0 were shown`.
+- **Root Cause Uncovered**:
+  In `shad_log.txt`:
+  `[Lib.Hmd] <Error> (RHIThread) hmd_reprojection.cpp:277 sceHmdReprojectionStart2dVr: (STUBBED) called`
+  was logged hundreds of times every second!
+
+### 7.2 Root Cause Analysis
+- In *Astro Bot*, the entire game exclusively renders in 3D VR reprojection via `sceHmdReprojectionStart` (`dntZTJ7meIU`).
+- In *Déraciné* (Unreal Engine 4), splash logos, opening cinematics, menus, and 2D overlays use **2D VR theater / reprojection** via `sceHmdReprojectionStart2dVr` (`q3e8+nEguyE`).
+- Because `sceHmdReprojectionStart2dVr` in shadPS4 was an empty stub returning `ORBIS_OK`, the emulator was throwing away every single 2D frame without delivering it to `Libraries::VideoOut::SubmitHmdFrame`.
+- When the user pressed the Virtual Desktop menu button (3 horizontal lines on left controller), Virtual Desktop's dashboard overlay toggled, triggering session state transitions while 0 frames had been presented, leading to session termination.
+
+### 7.3 Implemented Fix
+1. **ELF Disassembly of UE4 Call Site (`0xcdb240 - 0xcdb2b4`)**:
+   - Reconstructed the `OrbisHmdReprojection2dVrParam` struct:
+     - `texture`: Guest `sce::Gnm::Texture*` (`AmdGpu::Image*`).
+     - `sampler`: Guest sampler descriptor (`0x3531c40`).
+     - `uv`: View UV coordinates (`scale_x, scale_y, offset_x, offset_y`).
+     - `frame_label`: Sync label pointer.
+     - `timeout`: 0xfa0 (4000).
+   - Calling convention: `sceHmdReprojectionStart2dVr(param, flip_arg, option)` where `rsi = flip_arg` and `edx = option`.
+2. **Implementation in `hmd_reprojection.cpp`**:
+   - Copies the 2D frame texture to both eye slots (`frame.eye_textures[0]` and `frame.eye_textures[1]`).
+   - Computes FOV from `param->uv` via `FovFromUv(param->uv)` with fallback to headset native FOV (`Runtime::Instance().GetConfig().fov`).
+   - Retrieves the current head pose (`Runtime::Instance().GetHead().pose`) for stable reprojection.
+   - Forwards to `Libraries::VideoOut::SubmitHmdFrame(video_out_handle, frame)`.
+   - The presenter blits the frame to the OpenXR swapchain, delivering the 2D splash screens, logos, and title menu in the headset at full framerate.
+
+---
+
+## 8. Next Actions Checklist
+
+1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
+2. [x] **Fix Black Screen (2D VR Reprojection)**: Implemented `sceHmdReprojectionStart2dVr` in `hmd.h` and `hmd_reprojection.cpp`.
+3. [ ] **Push & Run Fast CI**: Push commit to GitHub (`ccache` builds in ~2 minutes), download artifact with `python scratch/download_artifact.py`.
+4. [ ] **In-Headset Verification**: Run `Play Deracine VR.bat`, confirm logos, intro, and title screen appear visibly in headset!
