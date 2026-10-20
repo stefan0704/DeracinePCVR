@@ -193,6 +193,7 @@ Installing this entire 10GB toolchain locally on user machines is heavy and slow
 - **Run #4**: Failed during compilation of `ImGuiFileDialog.cpp` (`error: no member named 'ChildFlagsSet' in 'ImGuiNextWindowData'`). Root cause: `src/.gitmodules` lacked `branch = shadps4` for `externals/ImGuiFileDialog`, causing Git to clone the upstream `master` branch (which has breaking ImGui API differences) instead of the patched `shadps4` branch. Fixed by specifying `branch = shadps4` in `src/.gitmodules`.
 - **Run #5**: Reached deep build stage (~19 mins, 11,134 lines of log) with all externals and VR runtime compiling smoothly. Failed solely on `ajm_at9.cpp` (`error: no matching function for call to 'Atrac9Decode'`) because upstream `ext-LibAtrac9` master changed function signatures from 5 to 6 arguments (`int atrac9BufferSize`). Fixed by tracking the verified 250KB `LibAtrac9` tree natively in the repository under `.gitignore` whitelist and removing it from `.gitmodules`.
 - **Run #6**: Passed all externals and `LibAtrac9`/`ajm_at9.cpp` compilation. Failed at `vr_tracker.cpp` due to two leftover `g_move_handle` references (after refactoring to `g_move_handles` array). Fixed by replacing with `g_move_handles` check and `FindMoveIndex(handle)` removal logic.
+- **Run #7**: Reached end of build. Failed at `openxr_host.cpp` (11,285 lines of log) with `undeclared identifier 'cross'` and `'square'` because `pressed(act_cross)` was passed into `add()` without storing into local boolean variables. Fixed by declaring `const bool cross` and `const bool square`.
 
 ---
 
