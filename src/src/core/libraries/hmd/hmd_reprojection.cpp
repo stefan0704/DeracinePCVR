@@ -50,9 +50,12 @@ Reprojection g_reprojection;
 Core::Vr::Fov FovFromUv(const OrbisHmdReprojectionEyeUv& left_eye) {
     // uv = tan * scale + offset, so the image edges (uv 0 and 1) give the half angles back.
     // On the left eye the left edge is the temple side.
+    // For Side-by-Side stereo images (left eye in [0, 0.5]), the nasal edge is at U = 0.5,
+    // not U = 1.0. This prevents the right eye image from bleeding into the left eye.
+    const float right_edge = (left_eye.offset_x < 0.5f && left_eye.scale_x < 0.35f) ? 0.5f : 1.0f;
     return {
         .tan_out = left_eye.offset_x / left_eye.scale_x,
-        .tan_in = (1.0f - left_eye.offset_x) / left_eye.scale_x,
+        .tan_in = (right_edge - left_eye.offset_x) / left_eye.scale_x,
         .tan_top = left_eye.offset_y / left_eye.scale_y,
         .tan_bottom = (1.0f - left_eye.offset_y) / left_eye.scale_y,
     };
@@ -285,24 +288,16 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
 
     if (param->uv.scale_x > 0.4f && param->uv.scale_x < 0.6f && std::isfinite(param->uv.scale_x)) {
         // Déraciné / UE4 Side-by-Side 2D VR screen:
-        // Left eye image is in U in [0.0, 0.5], V in [0.25, 0.75].
-        // Right eye image is in U in [0.5, 1.0], V in [0.25, 0.75].
-        // To show a centered 16:9 virtual cinema screen in front of each eye:
-        // Center of left eye screen is at U = 0.25.
-        // Screen half-width is 0.25 in UV. Setting tan_h = 0.55f (~28.8 deg half-angle / 57.6 deg total width).
-        // Distance from center U=0.25 to left edge U=0.0 is 0.25 -> maps to tan_out = tan_h = 0.55f.
-        // Distance from center U=0.25 to right texture edge U=1.0 is 0.75 -> maps to tan_in = 3.0f * tan_h = 1.65f.
-        // The right half of the texture is pushed to 1.65f (58.8 deg nasal side), completely outside the headset lens!
-        // Vertically: 16:9 aspect ratio -> tan_v = tan_h * (9.0f / 16.0f) = 0.309375f.
-        // Center is at V = 0.50. Screen half-height is 0.25 in UV.
-        // Distance from center V=0.50 to texture edge V=0.0/1.0 is 0.50 (2x screen half-height) -> tan_top = tan_bottom = 2.0f * tan_v = 0.61875f.
-        const float tan_h = 0.55f;
+        // Left eye image is in [0, 0.5], Right eye image is in [0.5, 1.0].
+        // With SBS presentation, each eye receives exclusively its own half in the swapchain.
+        // Symmetric cinema FOV centered in front of each eye:
+        const float tan_h = 0.50f; // ~26.5 deg half-angle / 53 deg total width
         const float tan_v = tan_h * (9.0f / 16.0f);
         frame.fov = {
             .tan_out = tan_h,
-            .tan_in = 3.0f * tan_h,
-            .tan_top = 2.0f * tan_v,
-            .tan_bottom = 2.0f * tan_v,
+            .tan_in = tan_h,
+            .tan_top = tan_v,
+            .tan_bottom = tan_v,
         };
     } else if (param->uv.scale_x > 0.01f && std::isfinite(param->uv.scale_x) &&
                param->uv.scale_y > 0.01f && std::isfinite(param->uv.scale_y) &&
