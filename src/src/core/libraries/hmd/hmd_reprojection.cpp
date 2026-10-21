@@ -283,16 +283,8 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
     std::memcpy(&frame.eye_textures[0], param->texture, sizeof(AmdGpu::Image));
     std::memcpy(&frame.eye_textures[1], param->texture, sizeof(AmdGpu::Image));
 
-    if (param->uv.scale_x > 0.05f && std::isfinite(param->uv.scale_x) &&
-        param->uv.scale_y > 0.05f && std::isfinite(param->uv.scale_y)) {
-        frame.fov = FovFromUv(param->uv);
-    } else {
-        frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
-    }
-
-    if (frame.fov.tan_out <= 0.05f || !std::isfinite(frame.fov.tan_out)) {
-        frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
-    }
+    // For 2D VR frames, use the full configured headset FOV so it displays comfortably
+    frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
 
     frame.render_pose = Core::Vr::Runtime::Instance().GetHead().pose;
     frame.flip_arg = flip_arg;
@@ -361,19 +353,33 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer2() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNear() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNear(const OrbisHmdReprojectionParam* param,
+                                                 const OrbisHmdReprojectionTrackerState* tracker_state,
+                                                 s64 flip_arg, s32 option) {
+    return sceHmdReprojectionStart(param, tracker_state, flip_arg, option);
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNearWithOverlay() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNearWithOverlay(const OrbisHmdReprojectionParam* param,
+                                                         const OrbisHmdReprojectionTrackerState* tracker_state,
+                                                         s64 flip_arg,
+                                                         const void* overlay_param,
+                                                         s32 option) {
+    return sceHmdReprojectionStart(param, tracker_state, flip_arg, option);
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay(const OrbisHmdReprojectionParam* param,
+                                                    const OrbisHmdReprojectionTrackerState* tracker_state,
+                                                    s64 flip_arg,
+                                                    const void* overlay_param,
+                                                    s32 option) {
+    static u32 with_overlay_frames = 0;
+    if (with_overlay_frames < 4) {
+        LOG_INFO(Lib_Hmd, "sceHmdReprojectionStartWithOverlay called: frame {}, overlay_param = {}",
+                 with_overlay_frames, overlay_param);
+    }
+    ++with_overlay_frames;
+
+    return sceHmdReprojectionStart(param, tracker_state, flip_arg, option);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionStop() {
