@@ -404,22 +404,7 @@ In `src/src/core/vr/openxr_host.cpp`:
 
 ---
 
-## 14. Step 11 Completed: Full 6-DoF Euler Rotation & Translation Calibration
-
-To give users full manual control over hand alignment without recompilation:
-1. **Full Euler Rotation Support**:
-   - Integrated `Core::Vr::FromYawPitchRoll` into `openxr_host.cpp`.
-   - `move_pitch` (X-axis): controls up/down tilt (default: `-45°`).
-   - `move_yaw` (Y-axis): controls left/right horizontal steering of the wand pointer (default: `0°`).
-   - `move_roll` (Z-axis): controls wrist twist / rotational tilt along the wand axis (default: `0°`).
-   - Left and right hands automatically mirror `yaw`, `roll`, and `offset_x` using `hand_sign` for ergonomic symmetry.
-2. **Settings.txt & Launch.ps1**:
-   - Exposed `move_pitch`, `move_yaw`, `move_roll`, `move_x`, `move_y`, `move_z` in `settings.txt`.
-   - Forwarded via `launch.ps1` into `SHADPS4_MOVE_*` environment variables.
-
----
-
-## 15. Next Actions Checklist
+## 14. Next Actions Checklist
 
 1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
 2. [x] **Fix 2D VR Intro/Menus**: Implemented `sceHmdReprojectionStart2dVr`.
@@ -430,7 +415,7 @@ To give users full manual control over hand alignment without recompilation:
 7. [x] **Full Ergonomic Control Scheme for Déraciné**: Implemented camera snap on right stick, move on right trigger & left stick up, crouch on left trigger & left stick click, inventory on Quest X, inspect on Quest Y/B.
 8. [x] **Move 6DoF Calibration & Single-Input Inventory**: Applied pitch rotation (-52°) and hand position offset, fixed Quest X inventory bounce.
 9. [x] **Runtime Config in settings.txt**: Enabled live configuration of `move_pitch`, `move_y`, `move_z` in `settings.txt`.
-10. [x] **Eliminate Lever Arm via Sphere Projection**: Reordered rotation first, then forward projection to Move Sphere (`offset_z=-0.135`, `offset_y=0.000`).
-11. [x] **Full 6-DoF Euler Calibration (Yaw & Roll)**: Added `move_yaw` and `move_roll` to `openxr_host.cpp` and `settings.txt`.
-12. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
-13. [ ] **Visual Polish**: Create branch `optimizacion-graficos` and address visual artifacts and rendering performance.
+10. [x] **Eliminate Lever Arm via Sphere Projection**: Reordered rotation first, then forward projection to Move Sphere (`offset_z=-0.150`, `offset_y=0.020`).
+11. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
+12. [ ] **In-Headset Verification**: Verify hands stay locked to physical controllers in all angles (forward, sideways, up).
+13. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.
