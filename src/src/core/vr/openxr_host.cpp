@@ -1400,6 +1400,31 @@ struct OpenXrHost::Impl {
                 hand_state.pose.orientation =
                     Normalize({hand_location.pose.orientation.x, hand_location.pose.orientation.y,
                                hand_location.pose.orientation.z, hand_location.pose.orientation.w});
+
+                // Move 6DoF calibration:
+                // PS Move controllers have the tracking sphere at the top of the wand, and Déraciné
+                // casts interaction/pointing rays along the longitudinal axis of the wand.
+                // On Quest controllers, the grip pose is anchored in the palm and tilted back ~35-40 deg.
+                // We apply:
+                // 1. Position offset (+6.5cm up along +Y, -4.0cm forward along -Z) to place the in-game
+                //    hands directly inside the physical Quest controller grips.
+                // 2. Pitch rotation (-36 deg around local X) to tilt the pointing ray downwards,
+                //    aligning the game's interaction ray with the physical Quest controller laser.
+                static const float pitch_deg = EnvFloat("SHADPS4_MOVE_PITCH", -36.0f);
+                static const float offset_x = EnvFloat("SHADPS4_MOVE_X", 0.0f);
+                static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.065f);
+                static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.040f);
+
+                const Vec3 local_offset{offset_x, offset_y, offset_z};
+                const Vec3 world_offset = Rotate(hand_state.pose.orientation, local_offset);
+                hand_state.pose.position.x += world_offset.x;
+                hand_state.pose.position.y += world_offset.y;
+                hand_state.pose.position.z += world_offset.z;
+
+                const float pitch_rad = pitch_deg * (3.14159265358979323846f / 180.0f);
+                const Quat rot_pitch{std::sin(pitch_rad * 0.5f), 0.0f, 0.0f, std::cos(pitch_rad * 0.5f)};
+                hand_state.pose.orientation = Normalize(Multiply(hand_state.pose.orientation, rot_pitch));
+
                 if ((hand_velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0) {
                     hand_state.linear_velocity = {hand_velocity.linearVelocity.x,
                                                   hand_velocity.linearVelocity.y,
@@ -1422,7 +1447,7 @@ struct OpenXrHost::Impl {
         const u8 left_move_trigger = static_cast<u8>(std::clamp(left_grab * 255.0f, 0.0f, 255.0f));
         if (left_grab > 0.25f) left_move_buttons |= (1 << 1); // Trigger digital click (Grab)
         if (left_trigger > 0.25f || left_stick_in) left_move_buttons |= (1 << 2); // Move button (Crouch / Agacharse)
-        if (circle) left_move_buttons |= (1 << 6) | (1 << 5); // Cross + Circle (Quest X -> Menú de Objetos / Inventario)
+        if (circle) left_move_buttons |= (1 << 6); // Cross (Quest X -> Menú de Objetos / Inventario)
         if (triangle) left_move_buttons |= (1 << 7) | (1 << 4); // Square + Triangle (Quest Y -> Reloj de Tiempo / Info objeto)
         if (pressed(act_options)) left_move_buttons |= (1 << 3); // Start/Options
 

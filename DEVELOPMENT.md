@@ -354,7 +354,7 @@ In `src/src/core/vr/openxr_host.cpp`:
 - **Left Quest Controller**:
   - **Grip**: Left Move Trigger (`trigger_data` + `1 << 1`) $\rightarrow$ Grab items in left hand.
   - **Index Trigger OR Thumbstick Click**: Left Move Center Button (`1 << 2`) $\rightarrow$ Crouch / Agacharse.
-  - **Button X** (`circle`): Left Move Cross + Circle (`(1 << 6) | (1 << 5)`) $\rightarrow$ Object Menu / Inventory (Menú de Objetos).
+  - **Button X** (`circle`): Left Move Cross (`1 << 6`) $\rightarrow$ Object Menu / Inventory (Menú de Objetos - single toggle).
   - **Button Y** (`triangle`): Left Move Square + Triangle (`(1 << 7) | (1 << 4)`) $\rightarrow$ Time Watch (Reloj de Tiempo) / Inspect left item.
   - **Menu Button**: Left Move Start/Options (`1 << 3`).
 - **Right Quest Controller**:
@@ -368,7 +368,23 @@ In `src/src/core/vr/openxr_host.cpp`:
 
 ---
 
-## 12. Next Actions Checklist
+## 12. Step 9 Completed: Move 6DoF Calibration (Pitch Angle & Hand Position Offset) & Inventory Fix
+
+### 12.1 Diagnosis from Quest In-Headset Screenshots
+1. **Ray Angle ("Rayo")**: The in-game blue interaction ray projected upwards at a ~35°–40° angle instead of straight forward, because OpenXR `grip/pose` represents the angled grip of the Quest controller inside the fist, whereas *Déraciné* assumed the longitudinal axis of a PlayStation Move wand.
+2. **Hand Offset ("Manos")**: The in-game fairy hand models rendered 6–8 cm below the physical Quest controllers because Sony PSVR tracking tracked the spherical glowing bulb located at the top of the Move wand (~15 cm above the grip).
+3. **Inventory Bounce**: Sending `(1 << 6) | (1 << 5)` simultaneously on Quest X caused *Déraciné* to toggle and cancel/re-toggle every frame, causing the menu to bounce back open when trying to close.
+
+### 12.2 Implemented Fix
+1. **Move 6DoF Pose Calibration in `openxr_host.cpp`**:
+   - **Local Position Offset**: Added $+6.5\text{ cm}$ vertical ($+Y$) and $+4.0\text{ cm}$ forward ($-Z$) translation in the controller's local orientation frame (`Rotate(orientation, local_offset)`), shifting the in-game hands directly inside the physical Quest controller grips.
+   - **Local Pitch Rotation**: Applied a $-36^\circ$ pitch rotation around local $X$ (`rot_pitch = (sin(θ/2), 0, 0, cos(θ/2))`), bringing the interaction ray down to align parallel with the Quest pointer.
+   - **Configurability**: Exposed `move_pitch`, `move_y`, `move_z`, `move_x` in `settings.txt` (and parsed via `launch.ps1` into `SHADPS4_MOVE_*` env vars) for runtime fine-tuning.
+2. **Clean Inventory Input**: Set Quest X exclusively to `(1 << 6)` (Cross), ensuring crisp, single-action open and close.
+
+---
+
+## 13. Next Actions Checklist
 
 1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
 2. [x] **Fix 2D VR Intro/Menus**: Implemented `sceHmdReprojectionStart2dVr`.
@@ -377,6 +393,7 @@ In `src/src/core/vr/openxr_host.cpp`:
 5. [x] **Fix Object Grab Crash (0xC0000005 in ResolveDepthOverlap)**: Re-fetched references in `TextureCache::ResolveDepthOverlap` and `FindDepthTarget`.
 6. [x] **Fix Quest Controller Grab Mapping**: Mapped Grip to Grab (Move Trigger).
 7. [x] **Full Ergonomic Control Scheme for Déraciné**: Implemented camera snap on right stick, move on right trigger & left stick up, crouch on left trigger & left stick click, inventory on Quest X, inspect on Quest Y/B.
-8. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
-9. [ ] **In-Headset Verification**: Test updated control scheme in-game (crouch, teleport, inventory, item inspection, camera turning).
-10. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.
+8. [x] **Move 6DoF Calibration & Single-Input Inventory**: Applied pitch rotation (-36°) and hand position offset (+6.5cm Y, -4.0cm Z), fixed Quest X inventory bounce.
+9. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
+10. [ ] **In-Headset Verification**: Verify aligned hands and rays, and crisp inventory toggling in Quest.
+11. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.

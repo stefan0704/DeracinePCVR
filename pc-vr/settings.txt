@@ -1,4 +1,4 @@
-﻿# Settings for "Play Deracine VR.bat", one key=value a line. Lines starting with # are ignored;
+# Settings for "Play Deracine VR.bat", one key=value a line. Lines starting with # are ignored;
 # what is commented out below shows the value that applies when the line is left out.
 
 # game: Location of the game's eboot.bin or .pkg package.
@@ -32,9 +32,15 @@
 
 # Desktop mirror view mode: "stereo" (both eyes side-by-side), "spectator" (single eye), "combined"
 #desktop_view=stereo
-resolution=2880
-fps=60
+resolution=3600
+fps=90
 fov=100
 menu=1
-desktop_view=stereo
+desktop_view=spectator
 desktop_crop=0
+
+# Move controller 6DoF calibration (pitch in degrees, offsets in meters):
+# Defaults: move_pitch=-36, move_y=0.065, move_z=-0.040, move_x=0.0
+#move_pitch=-36
+#move_y=0.065
+#move_z=-0.040
