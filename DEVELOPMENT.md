@@ -377,9 +377,9 @@ In `src/src/core/vr/openxr_host.cpp`:
 
 ### 12.2 Implemented Fix
 1. **Move 6DoF Pose Calibration in `openxr_host.cpp`**:
-   - **Local Position Offset**: Added $+6.5\text{ cm}$ vertical ($+Y$) and $+4.0\text{ cm}$ forward ($-Z$) translation in the controller's local orientation frame (`Rotate(orientation, local_offset)`), shifting the in-game hands directly inside the physical Quest controller grips.
-   - **Local Pitch Rotation**: Applied a $-36^\circ$ pitch rotation around local $X$ (`rot_pitch = (sin(θ/2), 0, 0, cos(θ/2))`), bringing the interaction ray down to align parallel with the Quest pointer.
-   - **Configurability**: Exposed `move_pitch`, `move_y`, `move_z`, `move_x` in `settings.txt` (and parsed via `launch.ps1` into `SHADPS4_MOVE_*` env vars) for runtime fine-tuning.
+   - **Local Position Offset**: Added $+12.0\text{ cm}$ vertical ($+Y$) and $+6.5\text{ cm}$ forward ($-Z$) translation in the controller's local orientation frame (`Rotate(orientation, local_offset)`), lifting the in-game hands directly into the physical Quest controller grip handle.
+   - **Local Pitch Rotation**: Applied a $-52^\circ$ pitch rotation around local $X$ (`rot_pitch = (sin(θ/2), 0, 0, cos(θ/2))`), bringing the interaction ray down to align parallel with the Quest pointer.
+   - **Configurability**: Exposed `move_pitch=-52`, `move_y=0.120`, `move_z=-0.065`, `move_x=0.0` directly in `settings.txt` (and parsed via `launch.ps1` into `SHADPS4_MOVE_*` env vars) so any further fine-tuning takes effect instantly on launch.
 2. **Clean Inventory Input**: Set Quest X exclusively to `(1 << 6)` (Cross), ensuring crisp, single-action open and close.
 
 ---
@@ -393,7 +393,8 @@ In `src/src/core/vr/openxr_host.cpp`:
 5. [x] **Fix Object Grab Crash (0xC0000005 in ResolveDepthOverlap)**: Re-fetched references in `TextureCache::ResolveDepthOverlap` and `FindDepthTarget`.
 6. [x] **Fix Quest Controller Grab Mapping**: Mapped Grip to Grab (Move Trigger).
 7. [x] **Full Ergonomic Control Scheme for Déraciné**: Implemented camera snap on right stick, move on right trigger & left stick up, crouch on left trigger & left stick click, inventory on Quest X, inspect on Quest Y/B.
-8. [x] **Move 6DoF Calibration & Single-Input Inventory**: Applied pitch rotation (-36°) and hand position offset (+6.5cm Y, -4.0cm Z), fixed Quest X inventory bounce.
-9. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
-10. [ ] **In-Headset Verification**: Verify aligned hands and rays, and crisp inventory toggling in Quest.
-11. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.
+8. [x] **Move 6DoF Calibration & Single-Input Inventory**: Applied pitch rotation (-52°) and hand position offset (+12.0cm Y, -6.5cm Z), fixed Quest X inventory bounce.
+9. [x] **Runtime Config in settings.txt**: Enabled live configuration of `move_pitch`, `move_y`, `move_z` in `settings.txt`.
+10. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
+11. [ ] **In-Headset Verification**: Verify aligned hands and rays, and crisp inventory toggling in Quest.
+12. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.

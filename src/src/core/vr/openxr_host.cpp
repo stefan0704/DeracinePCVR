@@ -1410,10 +1410,10 @@ struct OpenXrHost::Impl {
                 //    hands directly inside the physical Quest controller grips.
                 // 2. Pitch rotation (-36 deg around local X) to tilt the pointing ray downwards,
                 //    aligning the game's interaction ray with the physical Quest controller laser.
-                static const float pitch_deg = EnvFloat("SHADPS4_MOVE_PITCH", -36.0f);
+                static const float pitch_deg = EnvFloat("SHADPS4_MOVE_PITCH", -52.0f);
                 static const float offset_x = EnvFloat("SHADPS4_MOVE_X", 0.0f);
-                static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.065f);
-                static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.040f);
+                static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.120f);
+                static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.065f);
 
                 const Vec3 local_offset{offset_x, offset_y, offset_z};
                 const Vec3 world_offset = Rotate(hand_state.pose.orientation, local_offset);
