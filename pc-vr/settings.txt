@@ -32,7 +32,7 @@
 
 # Desktop mirror view mode: "stereo" (both eyes side-by-side), "spectator" (single eye), "combined"
 #desktop_view=stereo
-resolution=3600
+resolution=2520
 fps=90
 fov=100
 menu=1
@@ -40,7 +40,7 @@ desktop_view=spectator
 desktop_crop=0
 
 # Move controller 6DoF calibration (pitch in degrees, offsets in meters):
-# Defaults: move_pitch=-36, move_y=0.065, move_z=-0.040, move_x=0.0
-#move_pitch=-36
-#move_y=0.065
-#move_z=-0.040
+# Defaults: move_pitch=-52, move_y=0.120, move_z=-0.065, move_x=0.0
+move_pitch=-52
+move_y=0.120
+move_z=-0.065
