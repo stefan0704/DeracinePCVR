@@ -924,6 +924,10 @@ if ((Setting "controller_hand" "right") -eq "left") { $env:SHADPS4_XR_PAD_HAND =
 $env:SHADPS4_XR_WAIT = Setting "wait" "60"
 $env:SHADPS4_CONSOLE_LANGUAGE = Get-GameLanguage
 if ((Setting "turn") -ne "") { $env:SHADPS4_VR_TURN = Setting "turn" }
+if ((Setting "move_pitch") -ne "") { $env:SHADPS4_MOVE_PITCH = Setting "move_pitch" }
+if ((Setting "move_y") -ne "") { $env:SHADPS4_MOVE_Y = Setting "move_y" }
+if ((Setting "move_z") -ne "") { $env:SHADPS4_MOVE_Z = Setting "move_z" }
+if ((Setting "move_x") -ne "") { $env:SHADPS4_MOVE_X = Setting "move_x" }
 foreach ($pair in $extraEnv) {
     $at = $pair.IndexOf("=")
     if ($at -ge 1) { Set-Item -Path ("Env:" + $pair.Substring(0, $at)) -Value $pair.Substring($at + 1) }
