@@ -91,24 +91,33 @@ void MemoryManager::SetupMemoryRegions(u64 flexible_size, bool use_extended_mem1
 }
 
 u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
-    static constexpr u64 MinSizeToClamp = 1_GB;
-    // Dont bother with clamping if the size is small so we dont pay a map lookup on every buffer.
-    if (size < MinSizeToClamp) {
-        return size;
+    if (size == 0) {
+        return 0;
     }
 
     std::shared_lock lk{mutex};
-    ASSERT_MSG(IsValidMapping(virtual_addr), "Attempted to access invalid address {:#x}",
-               virtual_addr);
+    if (vma_map.empty() || !IsValidMapping(virtual_addr)) {
+        return 0;
+    }
 
     // Clamp size to the remaining size of the current VMA.
     auto vma = FindVMA(virtual_addr);
-    u64 clamped_size = vma->second.base + vma->second.size - virtual_addr;
+    if (vma == vma_map.end() || !vma->second.IsMapped()) {
+        return 0;
+    }
+    const auto& first_area = vma->second;
+    if (virtual_addr < first_area.base || virtual_addr >= first_area.base + first_area.size) {
+        return 0;
+    }
+    u64 clamped_size = first_area.base + first_area.size - virtual_addr;
+    VAddr expected_next_base = first_area.base + first_area.size;
     ++vma;
 
-    // Keep adding to the size while there is contigious virtual address space.
-    while (vma != vma_map.end() && vma->second.IsMapped() && clamped_size < size) {
+    // Keep adding to the size while there is contiguous mapped virtual address space.
+    while (vma != vma_map.end() && vma->second.IsMapped() && vma->second.base == expected_next_base &&
+           clamped_size < size) {
         clamped_size += vma->second.size;
+        expected_next_base += vma->second.size;
         ++vma;
     }
     clamped_size = std::min(clamped_size, size);
@@ -136,14 +145,32 @@ void MemoryManager::SetPrtArea(u32 id, VAddr address, u64 size) {
 }
 
 void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
+    if (size == 0) {
+        return;
+    }
     std::shared_lock lk{mutex};
-    ASSERT_MSG(IsValidMapping(virtual_addr), "Attempted to access invalid address {:#x}",
-               virtual_addr);
+    if (vma_map.empty() || !IsValidMapping(virtual_addr)) {
+        std::memset(dest, 0, size);
+        return;
+    }
 
     auto vma = FindVMA(virtual_addr);
-    while (size) {
-        u64 copy_size = std::min<u64>(vma->second.size - (virtual_addr - vma->first), size);
-        if (vma->second.IsMapped()) {
+    while (size > 0 && vma != vma_map.end()) {
+        const auto& area = vma->second;
+        // If the current virtual_addr is before this VMA (i.e. in an unmapped gap)
+        if (virtual_addr < area.base) {
+            const u64 gap_size = std::min<u64>(area.base - virtual_addr, size);
+            std::memset(dest, 0, gap_size);
+            size -= gap_size;
+            virtual_addr += gap_size;
+            dest += gap_size;
+            continue;
+        }
+
+        // virtual_addr is within [area.base, area.base + area.size)
+        const u64 offset_in_vma = virtual_addr - area.base;
+        const u64 copy_size = std::min<u64>(area.size - offset_in_vma, size);
+        if (area.IsMapped()) {
             std::memcpy(dest, std::bit_cast<const u8*>(virtual_addr), copy_size);
         } else {
             std::memset(dest, 0, copy_size);
@@ -152,6 +179,10 @@ void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
         virtual_addr += copy_size;
         dest += copy_size;
         ++vma;
+    }
+
+    if (size > 0) {
+        std::memset(dest, 0, size);
     }
 }
 
