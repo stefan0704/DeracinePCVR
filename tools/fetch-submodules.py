@@ -22,7 +22,19 @@ def fetch_submodules():
                 if branch:
                     cmd.extend(['-b', branch])
                 cmd.extend([url, full_path])
-                subprocess.run(cmd, check=True)
+                import time
+                import shutil
+                for attempt in range(1, 5):
+                    try:
+                        subprocess.run(cmd, check=True)
+                        break
+                    except subprocess.CalledProcessError as e:
+                        print(f"Attempt {attempt} failed for {subpath}: {e}")
+                        if attempt == 4:
+                            raise
+                        if os.path.exists(full_path):
+                            shutil.rmtree(full_path, ignore_errors=True)
+                        time.sleep(attempt * 4)
             else:
                 print(f"Submodule already present: {subpath}")
 
