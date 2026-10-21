@@ -302,12 +302,50 @@ However, during level streaming / transition to the gameplay map, the emulator c
 
 ---
 
-## 10. Next Actions Checklist
+## 10. Step 7 Completed: Object Interaction Crash Fix (`TextureCache::ResolveDepthOverlap`) & Quest Grip Grab Mapping
+
+### 10.1 Symptom & Log Diagnosis
+Upon reaching in-game 3D VR gameplay:
+- The user successfully transitioned past the initial loading screen into the 3D world.
+- The user walked over to an interactable object and grabbed it.
+- **Button Mapping Issue**: The user reported that grabbing was bound to the index trigger instead of the Quest controller grip button (hand squeeze).
+- **Crash Symptom**: Approximately one second after grabbing the object, the emulator crashed:
+  ```text
+  [Debug] <Critical> (shadPS4:GpuCommandProcessor) signals.cpp:195 SignalHandler: Unhandled Exception code 0xc0000005 at 0x700000b80e57
+    shadps4.exe + 0xb80e57 (TextureCache::ResolveDepthOverlap)
+    shadps4.exe + 0xb82bde (TextureCache::ResolveOverlap)
+    shadps4.exe + 0xb87f75 (TextureCache::FindOrCreateView)
+    shadps4.exe + 0xaed994 (Liverpool / GpuCommandProcessor)
+  ```
+
+### 10.2 Root Cause Analysis
+1. **Dangling Reference in `TextureCache::ResolveDepthOverlap`**:
+   - In `texture_cache.cpp` at line 301, `auto& cache_image = slot_images[cache_image_id];` was captured by reference.
+   - When object highlight/stencil/depth passes executed upon grabbing an object, `recreate = true` was triggered.
+   - At line 348, `slot_images.insert(...)` was called to create the new depth image. When `slot_images` (a `Common::SlotVector<Image>`) expanded its capacity, it reallocated its heap storage and freed the previous buffer.
+   - On the very next line (`new_image.usage = cache_image.usage;`), the code dereferenced `cache_image` (`r14 + 0x2b0`), accessing the freed memory block. This caused an immediate Access Violation `0xC0000005` at `0xb80e57`.
+2. **Move Controller Input Mapping**:
+   - In `openxr_host.cpp`, Quest index trigger was mapped to PS Move trigger (bit 1 + analog trigger) and Quest grip was mapped to PS Move button (bit 2).
+   - In VR conventions and *Déraciné*, players expect the hand grip button to perform the physical grabbing action (PS Move trigger), and the index trigger/stick to perform movement/teleportation (PS Move button).
+
+### 10.3 Implemented Fix
+1. **`src/src/video_core/texture_cache/texture_cache.cpp`**:
+   - In `ResolveDepthOverlap`, re-fetched `source_image` from `slot_images[cache_image_id]` after `slot_images.insert` and updated all subsequent references, eliminating the dangling reference.
+   - In `FindDepthTarget`, re-fetched `image` from `slot_images[image_id]` after `slot_images.insert` for stencil attachment linking.
+2. **`src/src/core/vr/openxr_host.cpp`**:
+   - Mapped Quest controller Grip (`left_grip` / `right_grip`) to PS Move Trigger (`left_move_trigger` / `right_move_trigger` analog and bit 1 digital click), enabling intuitive hand grab/squeeze interaction.
+   - Mapped Quest controller Trigger (`left_trigger` / `right_trigger`) to PS Move Button (`(1 << 2)`), enabling natural index finger point, teleport, and menu selection.
+
+---
+
+## 11. Next Actions Checklist
 
 1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
 2. [x] **Fix 2D VR Intro/Menus**: Implemented `sceHmdReprojectionStart2dVr`.
 3. [x] **Fix 3D VR Gameplay (5000+ frames)**: Implemented `sceHmdReprojectionStartWithOverlay` in `hmd.h` and `hmd_reprojection.cpp`.
 4. [x] **Fix Level Loading Crash (0xC0000005 in ObtainBuffer)**: Implemented `CopySparseMemory` in `BufferCache::ObtainBuffer` & `ObtainUniformBuffer`, hardened `ClampRangeSize` in `MemoryManager`.
-5. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
-6. [ ] **In-Headset Verification**: Run `Play Deracine VR.bat`, confirm transition from menus to in-game 3D VR gameplay without crash.
-7. [ ] **Visual Polish**: Address flat loading screen and visual artifacts noted by user once in-game.
+5. [x] **Fix Object Grab Crash (0xC0000005 in ResolveDepthOverlap)**: Re-fetched references in `TextureCache::ResolveDepthOverlap` and `FindDepthTarget`.
+6. [x] **Fix Quest Controller Grab Mapping**: Mapped Grip to Grab (Move Trigger) and Trigger to Move/Teleport.
+7. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
+8. [ ] **In-Headset Verification**: Run `Play Deracine VR.bat`, grab object with Quest Grip button, confirm game continues smoothly.
+9. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.
