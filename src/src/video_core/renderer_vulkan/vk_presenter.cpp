@@ -1193,7 +1193,8 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
     ++logged_frames;
 
     const auto& left_info = texture_cache.GetImage(image_ids[0]).info;
-    eye_width = left_info.size.width;
+    const bool is_sbs = eye_textures[0].Address() == eye_textures[1].Address();
+    eye_width = is_sbs ? (left_info.size.width / 2) : left_info.size.width;
     eye_height = left_info.size.height;
 
     // With a VR host attached the frame goes into one of its buffers instead of the window. A
@@ -1274,9 +1275,10 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
                (target->width == eye_width * 2 && target->height == eye_height);
     };
     const auto& right_info = texture_cache.GetImage(image_ids[1]).info;
+    const u32 src_image_width = is_sbs ? (eye_width * 2) : eye_width;
     bool encoded_in = pp_settings.gamma == 1.0f && pp_settings.hdr == 0 && !spectator &&
                       pixel_for_pixel(frame) && pixel_for_pixel(local) &&
-                      right_info.size.width == eye_width && right_info.size.height == eye_height &&
+                      right_info.size.width == src_image_width && right_info.size.height == eye_height &&
                       !FrameStats::AbOff("ppcopy");
     for (u32 eye = 0; eye < 2 && encoded_in; ++eye) {
         const vk::Format sibling = encoded_sibling(descs[eye].view_info.format);
@@ -1320,16 +1322,26 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
     }
     // Left eye on the left half, right eye on the right half.
     const auto regions_for = [&](const Frame& target) {
-        const u32 half_width = target.width / 2;
-        std::array<HostPasses::PostProcessingPass::Region, 2> regions;
-        for (u32 eye = 0; eye < 2; ++eye) {
-            regions[eye] = {
-                .input = eye_views[eye],
+        boost::container::static_vector<HostPasses::PostProcessingPass::Region, 2> regions;
+        if (is_sbs) {
+            regions.push_back({
+                .input = eye_views[0],
                 .area{
-                    .offset{.x = static_cast<s32>(eye * half_width), .y = 0},
-                    .extent{.width = half_width, .height = target.height},
+                    .offset{.x = 0, .y = 0},
+                    .extent{.width = target.width, .height = target.height},
                 },
-            };
+            });
+        } else {
+            const u32 half_width = target.width / 2;
+            for (u32 eye = 0; eye < 2; ++eye) {
+                regions.push_back({
+                    .input = eye_views[eye],
+                    .area{
+                        .offset{.x = static_cast<s32>(eye * half_width), .y = 0},
+                        .extent{.width = half_width, .height = target.height},
+                    },
+                });
+            }
         }
         return regions;
     };
