@@ -40,7 +40,7 @@ desktop_view=spectator
 desktop_crop=0
 
 # Move controller 6DoF calibration (pitch in degrees, offsets in meters):
-# Defaults: move_pitch=-52, move_y=0.020, move_z=-0.150, move_x=0.0
-move_pitch=-52
-move_y=0.020
-move_z=-0.150
+# Defaults: move_pitch=-45, move_y=0.000, move_z=-0.135, move_x=0.0
+move_pitch=-45
+move_y=0.000
+move_z=-0.135

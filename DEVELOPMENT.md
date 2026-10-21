@@ -398,9 +398,9 @@ When pointing forward, the hand model appeared relatively close. However, when t
 
 ### 13.2 Implemented Fix
 In `src/src/core/vr/openxr_host.cpp`:
-1. **Rotation First**: Applied the pitch rotation ($-52^\circ$) to `hand_state.pose.orientation` *first*, obtaining the true orientation of the Move wand.
-2. **Sphere Projection**: Projected `hand_state.pose.position` forward along this rotated wand axis by $+15.0\text{ cm}$ ($-Z = -0.150\text{ m}$) and $+2.0\text{ cm}$ vertical ($+Y = 0.020\text{ m}$) to the virtual Move Sphere.
-3. **Exact Cancellation**: When Déraciné applies its internal backwards offset from the sphere along the wand axis, both $+15\text{ cm}$ and $-15\text{ cm}$ cancel out identically in any orientation ($\text{Palm} + R\cdot\vec{v} - R\cdot\vec{v} = \text{Palm}$). The virtual hand remains permanently locked to the physical Quest controller regardless of wrist roll, pitch, or yaw.
+1. **Rotation First**: Applied the pitch rotation ($-45^\circ$) to `hand_state.pose.orientation` *first*, obtaining the true orientation of the Move wand and aligning the blue interaction ray with the Quest pointer.
+2. **Sphere Projection**: Projected `hand_state.pose.position` forward along this rotated wand axis by $+13.5\text{ cm}$ ($-Z = -0.135\text{ m}$) and $0.0\text{ cm}$ vertical ($+Y = 0.000\text{ m}$) to the virtual Move Sphere, placing the in-game hand model directly on the Quest controller grip.
+3. **Exact Cancellation**: When Déraciné applies its internal backwards offset from the sphere along the wand axis, both $+13.5\text{ cm}$ and $-13.5\text{ cm}$ cancel out identically in any orientation ($\text{Palm} + R\cdot\vec{v} - R\cdot\vec{v} = \text{Palm}$). The virtual hand remains permanently locked to the physical Quest controller regardless of wrist roll, pitch, or yaw.
 
 ---
 

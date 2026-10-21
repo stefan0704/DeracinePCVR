@@ -1413,10 +1413,10 @@ struct OpenXrHost::Impl {
                 //    (default: -15 cm forward along -Z, +2 cm in Y).
                 // 3. When Déraciné applies its internal wand offset from the sphere, both vectors cancel
                 //    out perfectly, anchoring the virtual hand directly onto the physical Quest grip.
-                static const float pitch_deg = EnvFloat("SHADPS4_MOVE_PITCH", -52.0f);
+                static const float pitch_deg = EnvFloat("SHADPS4_MOVE_PITCH", -45.0f);
                 static const float offset_x = EnvFloat("SHADPS4_MOVE_X", 0.0f);
-                static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.020f);
-                static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.150f);
+                static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.000f);
+                static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.135f);
 
                 // 1. Local rotation (pitch around local X):
                 const float pitch_rad = pitch_deg * (3.14159265358979323846f / 180.0f);
