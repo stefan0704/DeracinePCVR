@@ -354,8 +354,8 @@ In `src/src/core/vr/openxr_host.cpp`:
 - **Left Quest Controller**:
   - **Grip**: Left Move Trigger (`trigger_data` + `1 << 1`) $\rightarrow$ Grab items in left hand.
   - **Index Trigger OR Thumbstick Click**: Left Move Center Button (`1 << 2`) $\rightarrow$ Crouch / Agacharse.
-  - **Button X** (`circle`): Left Move Cross (`1 << 6`) $\rightarrow$ Toggle Inventory.
-  - **Button Y** (`triangle`): Left Move Square (`1 << 7`) $\rightarrow$ Inspect held item in left hand.
+  - **Button X** (`circle`): Left Move Cross + Circle (`(1 << 6) | (1 << 5)`) $\rightarrow$ Object Menu / Inventory (Menú de Objetos).
+  - **Button Y** (`triangle`): Left Move Square + Triangle (`(1 << 7) | (1 << 4)`) $\rightarrow$ Time Watch (Reloj de Tiempo) / Inspect left item.
   - **Menu Button**: Left Move Start/Options (`1 << 3`).
 - **Right Quest Controller**:
   - **Grip**: Right Move Trigger (`trigger_data` + `1 << 1`) $\rightarrow$ Grab items in right hand.
@@ -363,8 +363,7 @@ In `src/src/core/vr/openxr_host.cpp`:
   - **Thumbstick Horizontal (`finger.x`)**:
     - Left (`finger.x < -0.5f`): Right Move Cross (`1 << 6`) $\rightarrow$ Snap Turn Left.
     - Right (`finger.x > 0.5f`): Right Move Circle (`1 << 5`) $\rightarrow$ Snap Turn Right.
-  - **Button B** (`square`): Right Move Square (`1 << 7`) $\rightarrow$ Inspect held item in right hand.
-  - **Button A** (`cross`): Disabled (prevents accidental camera rotation).
+  - **Button B or A** (`square` or `cross`): Right Move Square + Triangle (`(1 << 7) | (1 << 4)`) $\rightarrow$ Inspect held item in right hand / interact.
   - **Thumbstick Click / Up**: Disabled.
 
 ---

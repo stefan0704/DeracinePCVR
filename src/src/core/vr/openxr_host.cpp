@@ -1422,8 +1422,8 @@ struct OpenXrHost::Impl {
         const u8 left_move_trigger = static_cast<u8>(std::clamp(left_grab * 255.0f, 0.0f, 255.0f));
         if (left_grab > 0.25f) left_move_buttons |= (1 << 1); // Trigger digital click (Grab)
         if (left_trigger > 0.25f || left_stick_in) left_move_buttons |= (1 << 2); // Move button (Crouch / Agacharse)
-        if (circle) left_move_buttons |= (1 << 6); // Cross / FaceButton2 (Quest X -> Inventory)
-        if (triangle) left_move_buttons |= (1 << 7); // Square / FaceButton1 (Quest Y -> Item details)
+        if (circle) left_move_buttons |= (1 << 6) | (1 << 5); // Cross + Circle (Quest X -> Menú de Objetos / Inventario)
+        if (triangle) left_move_buttons |= (1 << 7) | (1 << 4); // Square + Triangle (Quest Y -> Reloj de Tiempo / Info objeto)
         if (pressed(act_options)) left_move_buttons |= (1 << 3); // Start/Options
 
         // Right hand (hand 1):
@@ -1433,7 +1433,7 @@ struct OpenXrHost::Impl {
         const u8 right_move_trigger = static_cast<u8>(std::clamp(right_grab * 255.0f, 0.0f, 255.0f));
         if (right_grab > 0.25f) right_move_buttons |= (1 << 1); // Trigger digital click (Grab)
         if (right_trigger > 0.25f || move.y > 0.5f) right_move_buttons |= (1 << 2); // Move button (Teleport / Move)
-        if (square) right_move_buttons |= (1 << 7); // Square / FaceButton1 (Quest B -> Item details)
+        if (square || cross) right_move_buttons |= (1 << 7) | (1 << 4); // Square + Triangle (Quest B or A -> Info / Interact)
         if (finger.x < -0.5f) right_move_buttons |= (1 << 6); // Cross (Right stick left -> Turn left)
         if (finger.x > 0.5f) right_move_buttons |= (1 << 5); // Circle (Right stick right -> Turn right)
 
