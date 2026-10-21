@@ -338,14 +338,46 @@ Upon reaching in-game 3D VR gameplay:
 
 ---
 
-## 11. Next Actions Checklist
+## 11. Step 8 Completed: Ergonomic Quest Controller Scheme for *Déraciné* (Move Emulation)
+
+### 11.1 Context & Hardware Requirements
+*Déraciné* was designed for two PlayStation Move controllers which lacked analog joysticks:
+- Camera snap-turning was executed via the face buttons on the Right Move controller (Cross = Turn Left, Circle = Turn Right).
+- Movement / Teleportation was executed via the center Move button on the Right Move controller.
+- Crouching was executed via the center Move button on the Left Move controller.
+- Object grabbing was executed via the Move Trigger (analog + digital click).
+- Inspecting held item details was executed via the Square button on the hand holding the item.
+- Inventory was toggled via the Cross button on the Left Move controller.
+
+### 11.2 Ergonomic Quest Mapping Implemented
+In `src/src/core/vr/openxr_host.cpp`:
+- **Left Quest Controller**:
+  - **Grip**: Left Move Trigger (`trigger_data` + `1 << 1`) $\rightarrow$ Grab items in left hand.
+  - **Index Trigger OR Thumbstick Click**: Left Move Center Button (`1 << 2`) $\rightarrow$ Crouch / Agacharse.
+  - **Button X** (`circle`): Left Move Cross (`1 << 6`) $\rightarrow$ Toggle Inventory.
+  - **Button Y** (`triangle`): Left Move Square (`1 << 7`) $\rightarrow$ Inspect held item in left hand.
+  - **Menu Button**: Left Move Start/Options (`1 << 3`).
+- **Right Quest Controller**:
+  - **Grip**: Right Move Trigger (`trigger_data` + `1 << 1`) $\rightarrow$ Grab items in right hand.
+  - **Index Trigger OR Left Thumbstick UP (`move.y > 0.5f`)**: Right Move Center Button (`1 << 2`) $\rightarrow$ Move / Teleport.
+  - **Thumbstick Horizontal (`finger.x`)**:
+    - Left (`finger.x < -0.5f`): Right Move Cross (`1 << 6`) $\rightarrow$ Snap Turn Left.
+    - Right (`finger.x > 0.5f`): Right Move Circle (`1 << 5`) $\rightarrow$ Snap Turn Right.
+  - **Button B** (`square`): Right Move Square (`1 << 7`) $\rightarrow$ Inspect held item in right hand.
+  - **Button A** (`cross`): Disabled (prevents accidental camera rotation).
+  - **Thumbstick Click / Up**: Disabled.
+
+---
+
+## 12. Next Actions Checklist
 
 1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
 2. [x] **Fix 2D VR Intro/Menus**: Implemented `sceHmdReprojectionStart2dVr`.
 3. [x] **Fix 3D VR Gameplay (5000+ frames)**: Implemented `sceHmdReprojectionStartWithOverlay` in `hmd.h` and `hmd_reprojection.cpp`.
 4. [x] **Fix Level Loading Crash (0xC0000005 in ObtainBuffer)**: Implemented `CopySparseMemory` in `BufferCache::ObtainBuffer` & `ObtainUniformBuffer`, hardened `ClampRangeSize` in `MemoryManager`.
 5. [x] **Fix Object Grab Crash (0xC0000005 in ResolveDepthOverlap)**: Re-fetched references in `TextureCache::ResolveDepthOverlap` and `FindDepthTarget`.
-6. [x] **Fix Quest Controller Grab Mapping**: Mapped Grip to Grab (Move Trigger) and Trigger to Move/Teleport.
-7. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
-8. [ ] **In-Headset Verification**: Run `Play Deracine VR.bat`, grab object with Quest Grip button, confirm game continues smoothly.
-9. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.
+6. [x] **Fix Quest Controller Grab Mapping**: Mapped Grip to Grab (Move Trigger).
+7. [x] **Full Ergonomic Control Scheme for Déraciné**: Implemented camera snap on right stick, move on right trigger & left stick up, crouch on left trigger & left stick click, inventory on Quest X, inspect on Quest Y/B.
+8. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
+9. [ ] **In-Headset Verification**: Test updated control scheme in-game (crouch, teleport, inventory, item inspection, camera turning).
+10. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.
