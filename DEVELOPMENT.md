@@ -268,10 +268,46 @@ In `deracine.elf` at `0xcdd390` - `0xcdd5a5`:
 
 ---
 
-## 9. Next Actions Checklist
+## 9. Step 6 Completed: Level Loading Crash Fix (`BufferCache::ObtainBuffer` & `MemoryManager`)
+
+### 9.1 Symptom & Crash Log Analysis
+Upon booting *Déraciné*, the user was able to:
+- See the main title menu in full VR inside the headset.
+- Change language settings using the VR Move motion controls.
+- Start a new game.
+
+However, during level streaming / transition to the gameplay map, the emulator crashed with an Access Violation (`0xC0000005`):
+```text
+[Render] <Warning> (shadPS4:GpuCommandProcessor) page_manager.cpp:254 UpdatePageWatchers: Tracking memory region 0x2034b2b000 - 0x2034b31000 which is not fully GPU mapped.
+[Debug] <Critical> (shadPS4:GpuCommandProcessor) signals.cpp:195 SignalHandler: Unhandled Exception code 0xc0000005 at 0x7ff81333bc5b
+  VCRUNTIME140.dll + 0x1bc5b (memcpy)
+  shadps4.exe + 0xa2f6fa (BufferCache::ObtainBuffer)
+  shadps4.exe + 0xa2ed49 (BufferCache::BindVertexBuffers)
+  shadps4.exe + 0xaef1e5 (Liverpool / GpuCommandProcessor)
+```
+
+### 9.2 Root Cause Analysis
+1. In Unreal Engine 4, the CPU render/resource threads commit memory pools asynchronously via `sceKernelMemoryPoolCommit` (in 64KB chunks).
+2. During level loading, vertex buffers and uniform buffers are allocated in pooled memory. A vertex buffer range was placed at `0x2034b2b000 - 0x2034b31000`. The memory up to `0x2034b30000` was committed (`Mapped`), but `0x2034b30000 - 0x2034b31000` was still `PoolReserved` (uncommitted memory in the host address space).
+3. In `MemoryManager::ClampRangeSize`, an optimization `static constexpr u64 MinSizeToClamp = 1_GB;` was bypassing clamping for any buffer under 1GB, returning the unclamped `size = 0x6000` directly.
+4. In `BufferCache::ObtainBuffer` and `BufferCache::ObtainUniformBuffer`, small read-only buffers (`size <= CACHING_PAGESIZE`) were copied via `stream_buffer.Copy` and direct `std::memcpy(data, reinterpret_cast<const void*>(device_addr), size);`.
+5. When `std::memcpy` crossed the boundary at `0x2034b30000` into uncommitted memory, Windows triggered `0xC0000005: EXCEPTION_ACCESS_VIOLATION`. Because `shadPS4` registers a Vectored Exception Handler (VEH) with `FirstHandler = 1`, the VEH intercepted the page fault before SEH, identified it as an unhandled access to uncommitted memory, and immediately terminated the process.
+
+### 9.3 Implemented Fix
+1. **`src/src/core/memory.cpp`**:
+   - Hardened `MemoryManager::ClampRangeSize` to validate address mappings and contiguous mapped VMAs for all requested buffer sizes, ensuring buffers never claim bounds beyond committed memory.
+   - Hardened `MemoryManager::CopySparseMemory` against unmapped gaps, out-of-bounds addresses, and `vma_map.end()`, guaranteeing that unmapped/uncommitted pages are safely zero-filled with `std::memset` without triggering hardware access violations.
+2. **`src/src/video_core/buffer_cache/buffer_cache.cpp`**:
+   - Replaced raw `std::memcpy` calls in `BufferCache::ObtainBuffer` and `BufferCache::ObtainUniformBuffer` with `memory->CopySparseMemory(device_addr, data, size)`. This ensures that even if a guest draw command references partially committed or sparse pooled pages during level streaming, the host copy never faults.
+
+---
+
+## 10. Next Actions Checklist
 
 1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
 2. [x] **Fix 2D VR Intro/Menus**: Implemented `sceHmdReprojectionStart2dVr`.
 3. [x] **Fix 3D VR Gameplay (5000+ frames)**: Implemented `sceHmdReprojectionStartWithOverlay` in `hmd.h` and `hmd_reprojection.cpp`.
-4. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
-5. [ ] **In-Headset Verification**: Run `Play Deracine VR.bat`, confirm full 3D VR game visuals and tracking appear in headset.
+4. [x] **Fix Level Loading Crash (0xC0000005 in ObtainBuffer)**: Implemented `CopySparseMemory` in `BufferCache::ObtainBuffer` & `ObtainUniformBuffer`, hardened `ClampRangeSize` in `MemoryManager`.
+5. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
+6. [ ] **In-Headset Verification**: Run `Play Deracine VR.bat`, confirm transition from menus to in-game 3D VR gameplay without crash.
+7. [ ] **Visual Polish**: Address flat loading screen and visual artifacts noted by user once in-game.

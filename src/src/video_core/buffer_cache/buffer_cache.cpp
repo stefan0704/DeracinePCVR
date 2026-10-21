@@ -437,8 +437,10 @@ std::pair<Buffer*, u32> BufferCache::ObtainBuffer(VAddr device_addr, u32 size, b
     }
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
     if (!is_written && size <= CACHING_PAGESIZE && !IsRegionGpuModified(device_addr, size)) {
-        const u64 offset = stream_buffer.Copy(device_addr, size, instance.UniformMinAlignment());
-        return {&stream_buffer, offset};
+        const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
+        memory->CopySparseMemory(device_addr, data, size);
+        stream_buffer.Commit();
+        return {&stream_buffer, static_cast<u32>(offset)};
     }
     if (IsBufferInvalid(buffer_id)) {
         buffer_id = FindBuffer(device_addr, size);
@@ -465,7 +467,7 @@ std::pair<Buffer*, u32> BufferCache::ObtainUniformBuffer(VAddr device_addr, u32 
     const u32 rows = static_cast<u32>(Common::AlignUp(u64{size}, u64{16}));
     if (size <= CACHING_PAGESIZE && !IsRegionGpuModified(device_addr, size)) {
         const auto [data, offset] = stream_buffer.Map(rows, alignment);
-        std::memcpy(data, reinterpret_cast<const void*>(device_addr), size);
+        memory->CopySparseMemory(device_addr, data, size);
         std::memset(data + size, 0, rows - size);
         stream_buffer.Commit();
         return {&stream_buffer, static_cast<u32>(offset)};
