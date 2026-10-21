@@ -1414,17 +1414,24 @@ struct OpenXrHost::Impl {
                 // 3. When Déraciné applies its internal wand offset from the sphere, both vectors cancel
                 //    out perfectly, anchoring the virtual hand directly onto the physical Quest grip.
                 static const float pitch_deg = EnvFloat("SHADPS4_MOVE_PITCH", -45.0f);
+                static const float yaw_deg = EnvFloat("SHADPS4_MOVE_YAW", 0.0f);
+                static const float roll_deg = EnvFloat("SHADPS4_MOVE_ROLL", 0.0f);
                 static const float offset_x = EnvFloat("SHADPS4_MOVE_X", 0.0f);
                 static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.000f);
                 static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.135f);
 
-                // 1. Local rotation (pitch around local X):
-                const float pitch_rad = pitch_deg * (3.14159265358979323846f / 180.0f);
-                const Quat rot_pitch{std::sin(pitch_rad * 0.5f), 0.0f, 0.0f, std::cos(pitch_rad * 0.5f)};
-                hand_state.pose.orientation = Normalize(Multiply(hand_state.pose.orientation, rot_pitch));
+                // 1. Local rotation (Yaw about +Y, Pitch about +X, Roll about +Z):
+                const float deg2rad = 3.14159265358979323846f / 180.0f;
+                const float hand_sign = (hand == 0) ? -1.0f : 1.0f;
+                const float pitch_rad = pitch_deg * deg2rad;
+                const float yaw_rad = (yaw_deg * hand_sign) * deg2rad;
+                const float roll_rad = (roll_deg * hand_sign) * deg2rad;
+
+                const Quat local_rot = FromYawPitchRoll(yaw_rad, pitch_rad, roll_rad);
+                hand_state.pose.orientation = Normalize(Multiply(hand_state.pose.orientation, local_rot));
 
                 // 2. Position offset in the rotated wand frame (projecting to the Move sphere):
-                const Vec3 local_offset{offset_x, offset_y, offset_z};
+                const Vec3 local_offset{offset_x * hand_sign, offset_y, offset_z};
                 const Vec3 world_offset = Rotate(hand_state.pose.orientation, local_offset);
                 hand_state.pose.position.x += world_offset.x;
                 hand_state.pose.position.y += world_offset.y;
