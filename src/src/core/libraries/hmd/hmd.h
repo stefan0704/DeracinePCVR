@@ -155,9 +155,19 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
 s32 PS4_SYSV_ABI sceHmdReprojectionStartCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartLiveCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer2();
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNear();
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNearWithOverlay();
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay();
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNear(const OrbisHmdReprojectionParam* param,
+                                                 const OrbisHmdReprojectionTrackerState* tracker_state,
+                                                 s64 flip_arg, s32 option);
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNearWithOverlay(const OrbisHmdReprojectionParam* param,
+                                                         const OrbisHmdReprojectionTrackerState* tracker_state,
+                                                         s64 flip_arg,
+                                                         const void* overlay_param,
+                                                         s32 option);
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay(const OrbisHmdReprojectionParam* param,
+                                                    const OrbisHmdReprojectionTrackerState* tracker_state,
+                                                    s64 flip_arg,
+                                                    const void* overlay_param,
+                                                    s32 option);
 s32 PS4_SYSV_ABI sceHmdReprojectionStop();
 s32 PS4_SYSV_ABI sceHmdReprojectionStopCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStopLiveCapture();

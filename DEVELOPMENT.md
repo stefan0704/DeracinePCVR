@@ -236,9 +236,42 @@ When booting *Déraciné* in the Quest headset via Virtual Desktop:
 
 ---
 
-## 8. Next Actions Checklist
+## 8. Step 5 Completed: 3D VR Reprojection Implementation (`sceHmdReprojectionStartWithOverlay`)
+
+### 8.1 Symptom & Log Diagnosis
+After implementing `sceHmdReprojectionStart2dVr`:
+- The user reported seeing initial frames ("unas particulas como si fuera una pantalla muy pequeña") during the first few seconds, but the display quickly returned to black while music continued to play.
+- **Log Investigation of `shad_log.txt`**:
+  - `sceHmdReprojectionStart2dVr` executed only for the initial ~9 frames during early engine boot.
+  - As soon as Déraciné entered the main 3D world, a new dedicated thread spawned: `(ReprojectionAsyncTaskThreadPS4)`.
+  - This thread called `sceHmdReprojectionStartWithOverlay` (`kcldQ7zLYQQ`) **5,033 times**!
+  - `sceHmdReprojectionStartWithOverlay` in shadPS4 was an empty stub returning `ORBIS_OK`!
+  - Every single 3D VR gameplay frame of Déraciné was being discarded.
+
+### 8.2 Disassembly & Parameter Reconstruction
+In `deracine.elf` at `0xcdd390` - `0xcdd5a5`:
+- `rdi`: `const OrbisHmdReprojectionParam* param`
+  - Offset `0x00`: Left eye texture pointer (`texture[0]`).
+  - Offset `0x08`: Right eye texture pointer (`texture[1]`).
+  - Offset `0x10`: GNM Sampler descriptor.
+  - Offset `0x18..0x37`: UV coordinates for left and right eye (`scale_x, scale_y, offset_x, offset_y`).
+- `rsi`: `const OrbisHmdReprojectionTrackerState* tracker_state` (6DoF head pose).
+- `rdx`: `s64 flip_arg` (frame sequence).
+- `rcx`: `const void* overlay_param` (optional 2D UI / HUD overlay layer, `nullptr` when no overlay).
+- `r8`: `s32 option`.
+
+### 8.3 Implemented Fix
+1. **`hmd_reprojection.cpp`**:
+   - Implemented `sceHmdReprojectionStartWithOverlay`, forwarding directly to `sceHmdReprojectionStart(param, tracker_state, flip_arg, option)` to queue the full stereoscopic 3D frame to `Libraries::VideoOut::SubmitHmdFrame`.
+   - Also implemented `sceHmdReprojectionStartWideNear` and `sceHmdReprojectionStartWideNearWithOverlay` to forward to `sceHmdReprojectionStart`.
+   - In `sceHmdReprojectionStart2dVr`, set `frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;` directly, preventing the 2D intro screen from appearing shrunken or distorted.
+
+---
+
+## 9. Next Actions Checklist
 
 1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
-2. [x] **Fix Black Screen (2D VR Reprojection)**: Implemented `sceHmdReprojectionStart2dVr` in `hmd.h` and `hmd_reprojection.cpp`.
-3. [ ] **Push & Run Fast CI**: Push commit to GitHub (`ccache` builds in ~2 minutes), download artifact with `python scratch/download_artifact.py`.
-4. [ ] **In-Headset Verification**: Run `Play Deracine VR.bat`, confirm logos, intro, and title screen appear visibly in headset!
+2. [x] **Fix 2D VR Intro/Menus**: Implemented `sceHmdReprojectionStart2dVr`.
+3. [x] **Fix 3D VR Gameplay (5000+ frames)**: Implemented `sceHmdReprojectionStartWithOverlay` in `hmd.h` and `hmd_reprojection.cpp`.
+4. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
+5. [ ] **In-Headset Verification**: Run `Play Deracine VR.bat`, confirm full 3D VR game visuals and tracking appear in headset.

@@ -32,3 +32,6 @@ src/externals/*
 src/externals/aacdec/*
 !src/externals/aacdec/CMakeLists.txt
 
+# Documentation and settings
+DEVELOPMENT.md
+settings.json
