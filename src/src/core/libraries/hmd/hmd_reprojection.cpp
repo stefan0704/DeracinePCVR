@@ -283,9 +283,30 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
     std::memcpy(&frame.eye_textures[0], param->texture, sizeof(AmdGpu::Image));
     std::memcpy(&frame.eye_textures[1], param->texture, sizeof(AmdGpu::Image));
 
-    if (param->uv.scale_x > 0.01f && std::isfinite(param->uv.scale_x) &&
-        param->uv.scale_y > 0.01f && std::isfinite(param->uv.scale_y) &&
-        param->uv.offset_x > 0.01f && std::isfinite(param->uv.offset_x)) {
+    if (param->uv.scale_x > 0.4f && param->uv.scale_x < 0.6f && std::isfinite(param->uv.scale_x)) {
+        // Déraciné / UE4 Side-by-Side 2D VR screen:
+        // Left eye image is in U in [0.0, 0.5], V in [0.25, 0.75].
+        // Right eye image is in U in [0.5, 1.0], V in [0.25, 0.75].
+        // To show a centered 16:9 virtual cinema screen in front of each eye:
+        // Center of left eye screen is at U = 0.25.
+        // Screen half-width is 0.25 in UV. Setting tan_h = 0.55f (~28.8 deg half-angle / 57.6 deg total width).
+        // Distance from center U=0.25 to left edge U=0.0 is 0.25 -> maps to tan_out = tan_h = 0.55f.
+        // Distance from center U=0.25 to right texture edge U=1.0 is 0.75 -> maps to tan_in = 3.0f * tan_h = 1.65f.
+        // The right half of the texture is pushed to 1.65f (58.8 deg nasal side), completely outside the headset lens!
+        // Vertically: 16:9 aspect ratio -> tan_v = tan_h * (9.0f / 16.0f) = 0.309375f.
+        // Center is at V = 0.50. Screen half-height is 0.25 in UV.
+        // Distance from center V=0.50 to texture edge V=0.0/1.0 is 0.50 (2x screen half-height) -> tan_top = tan_bottom = 2.0f * tan_v = 0.61875f.
+        const float tan_h = 0.55f;
+        const float tan_v = tan_h * (9.0f / 16.0f);
+        frame.fov = {
+            .tan_out = tan_h,
+            .tan_in = 3.0f * tan_h,
+            .tan_top = 2.0f * tan_v,
+            .tan_bottom = 2.0f * tan_v,
+        };
+    } else if (param->uv.scale_x > 0.01f && std::isfinite(param->uv.scale_x) &&
+               param->uv.scale_y > 0.01f && std::isfinite(param->uv.scale_y) &&
+               param->uv.offset_x > 0.01f && std::isfinite(param->uv.offset_x)) {
         frame.fov = FovFromUv(param->uv);
     } else {
         frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
