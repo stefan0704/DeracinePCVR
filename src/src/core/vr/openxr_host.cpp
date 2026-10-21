@@ -1421,12 +1421,10 @@ struct OpenXrHost::Impl {
         const float left_grab = std::max(left_grip, 0.0f);
         const u8 left_move_trigger = static_cast<u8>(std::clamp(left_grab * 255.0f, 0.0f, 255.0f));
         if (left_grab > 0.25f) left_move_buttons |= (1 << 1); // Trigger digital click (Grab)
-        if (left_trigger > 0.25f || left_stick_in || move.y > 0.5f) left_move_buttons |= (1 << 2); // Move button (Teleport / Select)
-        if (circle) left_move_buttons |= (1 << 7); // Square / FaceButton1 (X on Touch)
-        if (triangle) left_move_buttons |= (1 << 4); // Triangle / FaceButton4 (Y on Touch)
+        if (left_trigger > 0.25f || left_stick_in) left_move_buttons |= (1 << 2); // Move button (Crouch / Agacharse)
+        if (circle) left_move_buttons |= (1 << 6); // Cross / FaceButton2 (Quest X -> Inventory)
+        if (triangle) left_move_buttons |= (1 << 7); // Square / FaceButton1 (Quest Y -> Item details)
         if (pressed(act_options)) left_move_buttons |= (1 << 3); // Start/Options
-        if (move.x < -0.5f) left_move_buttons |= (1 << 7); // Turn left / Square
-        if (move.x > 0.5f) left_move_buttons |= (1 << 4); // Turn right / Triangle
 
         // Right hand (hand 1):
         u16 right_move_buttons = 0;
@@ -1434,11 +1432,10 @@ struct OpenXrHost::Impl {
         const float right_grab = std::max(right_grip, 0.0f);
         const u8 right_move_trigger = static_cast<u8>(std::clamp(right_grab * 255.0f, 0.0f, 255.0f));
         if (right_grab > 0.25f) right_move_buttons |= (1 << 1); // Trigger digital click (Grab)
-        if (right_trigger > 0.25f || right_stick_in || finger.y > 0.5f) right_move_buttons |= (1 << 2); // Move button (Teleport / Select)
-        if (cross) right_move_buttons |= (1 << 6); // Cross / FaceButton2 (A on Touch)
-        if (square) right_move_buttons |= (1 << 5); // Circle / FaceButton3 (B on Touch)
-        if (finger.x < -0.5f) right_move_buttons |= (1 << 6); // Cross
-        if (finger.x > 0.5f) right_move_buttons |= (1 << 5); // Circle
+        if (right_trigger > 0.25f || move.y > 0.5f) right_move_buttons |= (1 << 2); // Move button (Teleport / Move)
+        if (square) right_move_buttons |= (1 << 7); // Square / FaceButton1 (Quest B -> Item details)
+        if (finger.x < -0.5f) right_move_buttons |= (1 << 6); // Cross (Right stick left -> Turn left)
+        if (finger.x > 0.5f) right_move_buttons |= (1 << 5); // Circle (Right stick right -> Turn right)
 
         Runtime::Instance().UpdateHandInput(0, left_move_buttons, left_move_trigger);
         Runtime::Instance().UpdateHandInput(1, right_move_buttons, right_move_trigger);
