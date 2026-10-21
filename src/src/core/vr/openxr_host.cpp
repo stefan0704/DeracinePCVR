@@ -1417,9 +1417,11 @@ struct OpenXrHost::Impl {
 
         // Left hand (hand 0):
         u16 left_move_buttons = 0;
-        const u8 left_move_trigger = static_cast<u8>(std::clamp(left_trigger * 255.0f, 0.0f, 255.0f));
-        if (left_trigger > 0.25f) left_move_buttons |= (1 << 1); // Trigger digital click
-        if (left_grip > 0.5f || left_stick_in || move.y > 0.5f) left_move_buttons |= (1 << 2); // Move button (FaceButton5)
+        // On Quest/PCVR, Grip is the natural Grab button (Move Trigger in PSVR)
+        const float left_grab = std::max(left_grip, 0.0f);
+        const u8 left_move_trigger = static_cast<u8>(std::clamp(left_grab * 255.0f, 0.0f, 255.0f));
+        if (left_grab > 0.25f) left_move_buttons |= (1 << 1); // Trigger digital click (Grab)
+        if (left_trigger > 0.25f || left_stick_in || move.y > 0.5f) left_move_buttons |= (1 << 2); // Move button (Teleport / Select)
         if (circle) left_move_buttons |= (1 << 7); // Square / FaceButton1 (X on Touch)
         if (triangle) left_move_buttons |= (1 << 4); // Triangle / FaceButton4 (Y on Touch)
         if (pressed(act_options)) left_move_buttons |= (1 << 3); // Start/Options
@@ -1428,9 +1430,11 @@ struct OpenXrHost::Impl {
 
         // Right hand (hand 1):
         u16 right_move_buttons = 0;
-        const u8 right_move_trigger = static_cast<u8>(std::clamp(right_trigger * 255.0f, 0.0f, 255.0f));
-        if (right_trigger > 0.25f) right_move_buttons |= (1 << 1); // Trigger digital click
-        if (right_grip > 0.5f || right_stick_in || finger.y > 0.5f) right_move_buttons |= (1 << 2); // Move button (FaceButton5)
+        // On Quest/PCVR, Grip is the natural Grab button (Move Trigger in PSVR)
+        const float right_grab = std::max(right_grip, 0.0f);
+        const u8 right_move_trigger = static_cast<u8>(std::clamp(right_grab * 255.0f, 0.0f, 255.0f));
+        if (right_grab > 0.25f) right_move_buttons |= (1 << 1); // Trigger digital click (Grab)
+        if (right_trigger > 0.25f || right_stick_in || finger.y > 0.5f) right_move_buttons |= (1 << 2); // Move button (Teleport / Select)
         if (cross) right_move_buttons |= (1 << 6); // Cross / FaceButton2 (A on Touch)
         if (square) right_move_buttons |= (1 << 5); // Circle / FaceButton3 (B on Touch)
         if (finger.x < -0.5f) right_move_buttons |= (1 << 6); // Cross

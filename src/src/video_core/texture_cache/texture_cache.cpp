@@ -348,32 +348,33 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
             slot_images.insert(instance, scheduler, blit_helper, slot_image_views, new_info);
         RegisterImage(new_image_id);
 
-        // Inherit image usage
+        // Re-fetch references after slot_images.insert may have reallocated storage
         auto& new_image = slot_images[new_image_id];
-        new_image.usage = cache_image.usage;
+        auto& source_image = slot_images[cache_image_id];
+        new_image.usage = source_image.usage;
         new_image.flags &= ~ImageFlagBits::Dirty;
         // When creating a depth buffer through overlap resolution don't clear it on first use.
         new_image.info.meta_info.htile_clear_mask = 0;
 
-        if (cache_image.info.num_samples == 1 && new_info.num_samples == 1) {
+        if (source_image.info.num_samples == 1 && new_info.num_samples == 1) {
             // Perform depth<->color copy using the intermediate copy buffer.
             if (instance.IsMaintenance8Supported()) {
-                new_image.CopyImage(cache_image);
+                new_image.CopyImage(source_image);
             } else {
                 const auto& copy_buffer = buffer_cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
-                new_image.CopyImageWithBuffer(cache_image, copy_buffer.Handle(), 0);
+                new_image.CopyImageWithBuffer(source_image, copy_buffer.Handle(), 0);
             }
-        } else if (cache_image.info.num_samples == 1 && new_info.props.is_depth &&
+        } else if (source_image.info.num_samples == 1 && new_info.props.is_depth &&
                    new_info.num_samples > 1) {
             // Perform a rendering pass to transfer the channels of source as samples in dest.
-            cache_image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
-                                vk::AccessFlagBits2::eShaderRead, {});
+            source_image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+                                 vk::AccessFlagBits2::eShaderRead, {});
             new_image.Transit(vk::ImageLayout::eDepthAttachmentOptimal,
                               vk::AccessFlagBits2::eDepthStencilAttachmentWrite, {});
             blit_helper.ReinterpretColorAsMsDepth(
                 new_info.size.width, new_info.size.height,
-                new_image.backing->image.image_ci.samples, cache_image.info.pixel_format,
-                new_info.pixel_format, cache_image.GetImage(), new_image.GetImage());
+                new_image.backing->image.image_ci.samples, source_image.info.pixel_format,
+                new_info.pixel_format, source_image.GetImage(), new_image.GetImage());
         } else {
             LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy");
         }
@@ -1026,6 +1027,7 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
                 slot_images.insert(instance, scheduler, blit_helper, slot_image_views, info);
             RegisterImage(stencil_id);
         }
+        Image& image = slot_images[image_id];
         Image& stencil_image = slot_images[stencil_id];
         TouchImage(stencil_image);
         stencil_image.AssociateDepth(image_id, image.image_uid);
