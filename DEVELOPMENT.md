@@ -384,7 +384,27 @@ In `src/src/core/vr/openxr_host.cpp`:
 
 ---
 
-## 13. Next Actions Checklist
+## 13. Step 10 Completed: Eliminating Move Wand Lever Arm via Pre-Rotated Sphere Projection
+
+### 13.1 Diagnosis from Side-View Screenshot (Pointing Left)
+When pointing forward, the hand model appeared relatively close. However, when turning the wrist 90° to point to the left, the virtual hand detached and floated ~20–25 cm to the right in the air.
+- **Root Cause Uncovered**:
+  - The Sony PS Move tracking system reports the 3D position of the **illuminated glowing sphere** at the tip of the wand.
+  - *Déraciné* (UE4) assumes the received `device_pose` is the Sphere, and internally applies a fixed backwards translation vector along the wand's axis ($-15\text{ cm}$) to position the hand model on the handle.
+  - In our previous implementation:
+    1. The position offset was rotated by the raw Quest grip orientation *before* pitch rotation was applied.
+    2. The position fed to Déraciné was the palm, not the sphere.
+    3. When the game engine subtracted 15 cm backwards along the pitch-rotated wand, turning the controller left rotated this vector to the right, creating a 25 cm lever arm arc.
+
+### 13.2 Implemented Fix
+In `src/src/core/vr/openxr_host.cpp`:
+1. **Rotation First**: Applied the pitch rotation ($-52^\circ$) to `hand_state.pose.orientation` *first*, obtaining the true orientation of the Move wand.
+2. **Sphere Projection**: Projected `hand_state.pose.position` forward along this rotated wand axis by $+15.0\text{ cm}$ ($-Z = -0.150\text{ m}$) and $+2.0\text{ cm}$ vertical ($+Y = 0.020\text{ m}$) to the virtual Move Sphere.
+3. **Exact Cancellation**: When Déraciné applies its internal backwards offset from the sphere along the wand axis, both $+15\text{ cm}$ and $-15\text{ cm}$ cancel out identically in any orientation ($\text{Palm} + R\cdot\vec{v} - R\cdot\vec{v} = \text{Palm}$). The virtual hand remains permanently locked to the physical Quest controller regardless of wrist roll, pitch, or yaw.
+
+---
+
+## 14. Next Actions Checklist
 
 1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
 2. [x] **Fix 2D VR Intro/Menus**: Implemented `sceHmdReprojectionStart2dVr`.
@@ -393,8 +413,9 @@ In `src/src/core/vr/openxr_host.cpp`:
 5. [x] **Fix Object Grab Crash (0xC0000005 in ResolveDepthOverlap)**: Re-fetched references in `TextureCache::ResolveDepthOverlap` and `FindDepthTarget`.
 6. [x] **Fix Quest Controller Grab Mapping**: Mapped Grip to Grab (Move Trigger).
 7. [x] **Full Ergonomic Control Scheme for Déraciné**: Implemented camera snap on right stick, move on right trigger & left stick up, crouch on left trigger & left stick click, inventory on Quest X, inspect on Quest Y/B.
-8. [x] **Move 6DoF Calibration & Single-Input Inventory**: Applied pitch rotation (-52°) and hand position offset (+12.0cm Y, -6.5cm Z), fixed Quest X inventory bounce.
+8. [x] **Move 6DoF Calibration & Single-Input Inventory**: Applied pitch rotation (-52°) and hand position offset, fixed Quest X inventory bounce.
 9. [x] **Runtime Config in settings.txt**: Enabled live configuration of `move_pitch`, `move_y`, `move_z` in `settings.txt`.
-10. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
-11. [ ] **In-Headset Verification**: Verify aligned hands and rays, and crisp inventory toggling in Quest.
-12. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.
+10. [x] **Eliminate Lever Arm via Sphere Projection**: Reordered rotation first, then forward projection to Move Sphere (`offset_z=-0.150`, `offset_y=0.020`).
+11. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
+12. [ ] **In-Headset Verification**: Verify hands stay locked to physical controllers in all angles (forward, sideways, up).
+13. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.

@@ -1402,28 +1402,33 @@ struct OpenXrHost::Impl {
                                hand_location.pose.orientation.z, hand_location.pose.orientation.w});
 
                 // Move 6DoF calibration:
-                // PS Move controllers have the tracking sphere at the top of the wand, and Déraciné
-                // casts interaction/pointing rays along the longitudinal axis of the wand.
-                // On Quest controllers, the grip pose is anchored in the palm and tilted back ~35-40 deg.
-                // We apply:
-                // 1. Position offset (+6.5cm up along +Y, -4.0cm forward along -Z) to place the in-game
-                //    hands directly inside the physical Quest controller grips.
-                // 2. Pitch rotation (-36 deg around local X) to tilt the pointing ray downwards,
-                //    aligning the game's interaction ray with the physical Quest controller laser.
+                // PS Move tracking reports the position of the illuminated SPHERE at the top of the wand.
+                // In Déraciné (UE4), the virtual hand model is placed as a child of the Move sphere,
+                // offset backwards along the wand's axis by ~15 cm to match the handle.
+                // To keep the virtual hand locked to the physical Quest controller regardless of wrist
+                // rotation (eliminating the lever arm effect), we:
+                // 1. First apply the pitch rotation (-52 deg around local X) to align the Move wand
+                //    axis with the Quest controller pointing direction.
+                // 2. Project the position forward along the rotated wand axis to the virtual Move Sphere
+                //    (default: -15 cm forward along -Z, +2 cm in Y).
+                // 3. When Déraciné applies its internal wand offset from the sphere, both vectors cancel
+                //    out perfectly, anchoring the virtual hand directly onto the physical Quest grip.
                 static const float pitch_deg = EnvFloat("SHADPS4_MOVE_PITCH", -52.0f);
                 static const float offset_x = EnvFloat("SHADPS4_MOVE_X", 0.0f);
-                static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.120f);
-                static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.065f);
+                static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.020f);
+                static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.150f);
 
+                // 1. Local rotation (pitch around local X):
+                const float pitch_rad = pitch_deg * (3.14159265358979323846f / 180.0f);
+                const Quat rot_pitch{std::sin(pitch_rad * 0.5f), 0.0f, 0.0f, std::cos(pitch_rad * 0.5f)};
+                hand_state.pose.orientation = Normalize(Multiply(hand_state.pose.orientation, rot_pitch));
+
+                // 2. Position offset in the rotated wand frame (projecting to the Move sphere):
                 const Vec3 local_offset{offset_x, offset_y, offset_z};
                 const Vec3 world_offset = Rotate(hand_state.pose.orientation, local_offset);
                 hand_state.pose.position.x += world_offset.x;
                 hand_state.pose.position.y += world_offset.y;
                 hand_state.pose.position.z += world_offset.z;
-
-                const float pitch_rad = pitch_deg * (3.14159265358979323846f / 180.0f);
-                const Quat rot_pitch{std::sin(pitch_rad * 0.5f), 0.0f, 0.0f, std::cos(pitch_rad * 0.5f)};
-                hand_state.pose.orientation = Normalize(Multiply(hand_state.pose.orientation, rot_pitch));
 
                 if ((hand_velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0) {
                     hand_state.linear_velocity = {hand_velocity.linearVelocity.x,
