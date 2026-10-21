@@ -404,7 +404,26 @@ In `src/src/core/vr/openxr_host.cpp`:
 
 ---
 
-## 14. Next Actions Checklist
+## 14. Step 12 Completed: Visual Polish (Face Morphs & 2D Loading Screens)
+
+### 14.1 Character Face Geometry Collapse ("Vertex Explosion")
+- **Symptom**: Black geometric holes / cutouts on character faces (such as over the eyebrows, nose, mouth, and eyelids) that appear and disappear as characters speak or animate.
+- **Root Cause**: In Unreal Engine 4 on PS4, facial animations rely on GPU-written Morph Targets / Blend Shapes. With `readbacks_mode: 0` (`Disabled`) in `config.json`, shadPS4 does not synchronize GPU-modified vertex buffer ranges back to CPU memory, causing vertices to desync and collapse inside the head mesh.
+- **Fix**:
+  1. Enabled **Relaxed Readbacks** (`readbacks_mode: 1`) in `pc-vr/user/config.json`.
+  2. Exposed `readbacks=relaxed` in `pc-vr/settings.txt`.
+  3. Added automatic sync in `pc-vr/launch.ps1` so `readbacks_mode` is always kept active on every launch.
+
+### 14.2 2D VR Loading Screen Double Vision
+- **Symptom**: During loading screens, each eye displayed two duplicate flat screens side-by-side.
+- **Root Cause**: In Déraciné (UE4), the engine outputs 2D loading screens into the stereoscopic side-by-side render target (Left eye in left half, Right eye in right half). In `sceHmdReprojectionStart2dVr`, `frame.fov` was previously hardcoded to the headset's symmetric native FOV (`GetConfig().fov`). Because symmetric FOV encompasses the full texture, the entire side-by-side image was displayed inside both the left and right eyes.
+- **Fix**:
+  - Restored `frame.fov = FovFromUv(param->uv)` in `sceHmdReprojectionStart2dVr`.
+  - The asymmetric UV offsets (`scale_x ~ 0.225`, `offset_x ~ 0.31`) cleanly project only the left half to the left eye and only the right half to the right eye, fusing both into one centered, comfortable 2D cinema screen without double vision.
+
+---
+
+## 15. Next Actions Checklist
 
 1. [x] **Verify CI Build**: Completed in Run #8 (`39511236719`). Generated `shadps4-deracine-pcvr` artifact.
 2. [x] **Fix 2D VR Intro/Menus**: Implemented `sceHmdReprojectionStart2dVr`.
@@ -415,7 +434,9 @@ In `src/src/core/vr/openxr_host.cpp`:
 7. [x] **Full Ergonomic Control Scheme for Déraciné**: Implemented camera snap on right stick, move on right trigger & left stick up, crouch on left trigger & left stick click, inventory on Quest X, inspect on Quest Y/B.
 8. [x] **Move 6DoF Calibration & Single-Input Inventory**: Applied pitch rotation (-52°) and hand position offset, fixed Quest X inventory bounce.
 9. [x] **Runtime Config in settings.txt**: Enabled live configuration of `move_pitch`, `move_y`, `move_z` in `settings.txt`.
-10. [x] **Eliminate Lever Arm via Sphere Projection**: Reordered rotation first, then forward projection to Move Sphere (`offset_z=-0.150`, `offset_y=0.020`).
-11. [ ] **Push & Run Fast CI**: Push commit to GitHub, auto-download with `scratch/wait_and_download.py`.
-12. [ ] **In-Headset Verification**: Verify hands stay locked to physical controllers in all angles (forward, sideways, up).
-13. [ ] **Visual Polish**: Address visual artifacts noted by user once gameplay is stable.
+10. [x] **Eliminate Lever Arm via Sphere Projection**: Reordered rotation first, then forward projection to Move Sphere (`offset_z=-0.135`, `offset_y=0.000`).
+11. [x] **Branch Isolation (`optimizacion-graficos`)**: Clean branch established for graphics and rendering polish.
+12. [x] **Fix Face Glitches**: Relaxed readbacks (`readbacks_mode: 1`).
+13. [x] **Fix Loading Screen Double Vision**: Asymmetric `FovFromUv` in `sceHmdReprojectionStart2dVr`.
+14. [ ] **In-Headset Verification**: Verify loading screen shows a single centered cinema display and character faces have no black cutouts.
+

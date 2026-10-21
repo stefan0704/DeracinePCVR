@@ -933,6 +933,32 @@ foreach ($pair in $extraEnv) {
     if ($at -ge 1) { Set-Item -Path ("Env:" + $pair.Substring(0, $at)) -Value $pair.Substring($at + 1) }
 }
 
+# Synchronize graphics settings into user/config.json
+$cfgPath = Join-Path $here "user\config.json"
+if (Test-Path $cfgPath) {
+    try {
+        $cfgJson = Get-Content $cfgPath -Raw | ConvertFrom-Json
+        $rbSetting = Setting "readbacks" "relaxed"
+        $rbMode = if ($rbSetting -eq "precise" -or $rbSetting -eq "2") { 2 } elseif ($rbSetting -eq "disabled" -or $rbSetting -eq "0") { 0 } else { 1 }
+        $changed = $false
+        if ($null -ne $cfgJson.GPU.readbacks_mode -and $cfgJson.GPU.readbacks_mode -ne $rbMode) {
+            $cfgJson.GPU.readbacks_mode = $rbMode
+            $changed = $true
+        }
+        $copyGpuSetting = Setting "copy_gpu_buffers" ""
+        if ($copyGpuSetting -ne "") {
+            $copyVal = ($copyGpuSetting -eq "1" -or $copyGpuSetting -eq "true")
+            if ($cfgJson.GPU.copy_gpu_buffers -ne $copyVal) {
+                $cfgJson.GPU.copy_gpu_buffers = $copyVal
+                $changed = $true
+            }
+        }
+        if ($changed) {
+            $cfgJson | ConvertTo-Json -Depth 10 | Set-Content $cfgPath
+        }
+    } catch {}
+}
+
 # --- what is there ----------------------------------------------------------------------------
 Say "Déraciné - PC VR" "Cyan"
 if ($env:SHADPS4_TITLE_EYE_WIDTH) {

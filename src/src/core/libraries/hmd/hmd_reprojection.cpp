@@ -283,8 +283,17 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
     std::memcpy(&frame.eye_textures[0], param->texture, sizeof(AmdGpu::Image));
     std::memcpy(&frame.eye_textures[1], param->texture, sizeof(AmdGpu::Image));
 
-    // For 2D VR frames, use the full configured headset FOV so it displays comfortably
-    frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
+    if (param->uv.scale_x > 0.01f && std::isfinite(param->uv.scale_x) &&
+        param->uv.scale_y > 0.01f && std::isfinite(param->uv.scale_y) &&
+        param->uv.offset_x > 0.01f && std::isfinite(param->uv.offset_x)) {
+        frame.fov = FovFromUv(param->uv);
+    } else {
+        frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
+    }
+
+    if (frame.fov.tan_out <= 0.05f || !std::isfinite(frame.fov.tan_out)) {
+        frame.fov = Core::Vr::Runtime::Instance().GetConfig().fov;
+    }
 
     frame.render_pose = Core::Vr::Runtime::Instance().GetHead().pose;
     frame.flip_arg = flip_arg;
@@ -302,7 +311,9 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
         frame.display_index = g_reprojection.display_index[frame_number & 1];
     }
 
-    if (frame_number < 4) {
+    static u32 logged_2d_frames = 0;
+    if (logged_2d_frames < 4) {
+        ++logged_2d_frames;
         const auto& left = frame.eye_textures[0];
         LOG_INFO(Lib_Hmd,
                  "2dVr frame {}: flip_arg = {}, eye {}x{} at {:#x}, tan out/in/top/bottom = "
