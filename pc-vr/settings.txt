@@ -39,18 +39,8 @@ menu=1
 desktop_view=combined
 desktop_crop=0
 
-# Move controller 6DoF calibration:
-# Rotations (in degrees):
-#   move_pitch: up / down tilt (-45 = straight laser)
-#   move_yaw: left / right horizontal steering (0 = straight)
-#   move_roll: wrist twist clockwise / counter-clockwise (0 = neutral)
-# Position offsets (in meters, 0.010 = 1cm):
-#   move_x: left / right lateral offset (0.000)
-#   move_y: up / down grip height offset (0.000)
-#   move_z: forward / backward distance offset (-0.135)
+# Move controller 6DoF calibration (pitch in degrees, offsets in meters):
+# Defaults: move_pitch=-45, move_y=0.000, move_z=-0.135, move_x=0.0
 move_pitch=-45
-move_yaw=0
-move_roll=0
-move_x=0.000
 move_y=0.000
 move_z=-0.135
