@@ -327,12 +327,12 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                     "Forcing buffer #0 F32 loads as U32 bitcast on {} (IEEE-bit preserving)",
                     instance_.GetModelName());
     }
-    WarmUp();
-
     auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
                vk::to_string(cache_result));
     pipeline_cache = std::move(cache);
+
+    WarmUp();
 }
 
 PipelineCache::~PipelineCache() = default;
