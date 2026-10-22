@@ -314,18 +314,24 @@ s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceInternal(const OrbisVrTrackerDeviceTy
                 return ORBIS_VR_TRACKER_ERROR_DEVICE_ALREADY_REGISTERED;
             }
         }
-        bool registered = false;
-        for (int i = 0; i < 2; ++i) {
-            if (g_move_handles[i] == -1) {
-                g_move_handles[i] = handle;
-                registered = true;
-                LOG_INFO(Lib_VrTracker, "Registered Move controller handle {:#x} as hand {}", handle, i);
-                break;
+        int target_slot = -1;
+        if (handle == 0x30b0100) {
+            target_slot = 0;
+        } else if (handle == 0x30b0200) {
+            target_slot = 1;
+        } else {
+            for (int i = 0; i < 2; ++i) {
+                if (g_move_handles[i] == -1) {
+                    target_slot = i;
+                    break;
+                }
             }
         }
-        if (!registered) {
+        if (target_slot == -1 || g_move_handles[target_slot] != -1) {
             return ORBIS_VR_TRACKER_ERROR_DEVICE_ALREADY_REGISTERED;
         }
+        g_move_handles[target_slot] = handle;
+        LOG_INFO(Lib_VrTracker, "Registered Move controller handle {:#x} as hand {}", handle, target_slot);
         break;
     }
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_GUN: {
