@@ -834,9 +834,19 @@ void Scheduler::PopPendingOperations() {
     // SubmitExecution's in-flight limit periodically advances the cached GPU tick. Querying the
     // timeline semaphore here makes Turnip enter a blocking ioctl on every submission, defeating
     // that batching. Only reclaim objects already proven idle; Finish() drains after its wait.
-    while (!pending_ops.empty() && master_semaphore.IsFree(pending_ops.front().gpu_tick)) {
-        pending_ops.front().callback();
-        pending_ops.pop();
+    while (true) {
+        Common::UniqueFunction<void> callback;
+        {
+            std::scoped_lock lk{pending_ops_mutex};
+            if (pending_ops.empty() || !master_semaphore.IsFree(pending_ops.front().gpu_tick)) {
+                break;
+            }
+            callback = std::move(pending_ops.front().callback);
+            pending_ops.pop();
+        }
+        if (callback) {
+            callback();
+        }
     }
 }
 
