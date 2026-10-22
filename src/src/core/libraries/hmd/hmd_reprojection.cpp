@@ -391,7 +391,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNearWithOverlay(const OrbisHmdReproj
                                                          s64 flip_arg,
                                                          const void* overlay_param,
                                                          s32 option) {
-    return sceHmdReprojectionStart(param, tracker_state, flip_arg, option);
+    return sceHmdReprojectionStartWithOverlay(param, tracker_state, flip_arg, overlay_param, option);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay(const OrbisHmdReprojectionParam* param,
@@ -400,9 +400,28 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay(const OrbisHmdReprojectionPa
                                                     const void* overlay_param,
                                                     s32 option) {
     static u32 with_overlay_frames = 0;
-    if (with_overlay_frames < 4) {
-        LOG_INFO(Lib_Hmd, "sceHmdReprojectionStartWithOverlay called: frame {}, overlay_param = {}",
+    if (with_overlay_frames < 10) {
+        LOG_INFO(Lib_Hmd, "sceHmdReprojectionStartWithOverlay: frame {}, overlay_param = {}",
                  with_overlay_frames, overlay_param);
+        if (overlay_param) {
+            const auto* ov = reinterpret_cast<const OrbisHmdReprojectionOverlayParam*>(overlay_param);
+            const auto* tex0 = reinterpret_cast<const AmdGpu::Image*>(ov->texture[0]);
+            const auto* tex1 = reinterpret_cast<const AmdGpu::Image*>(ov->texture[1]);
+            if (tex0) {
+                LOG_INFO(Lib_Hmd, "Overlay 0: {}x{} addr={:#x} fmt={} num_fmt={} sampler={}",
+                         tex0->width + 1, tex0->height + 1, tex0->Address(),
+                         u32(tex0->data_format), u32(tex0->num_format), ov->sampler);
+                LOG_INFO(Lib_Hmd, "Overlay UV 0: scale {:.4f}/{:.4f} offset {:.4f}/{:.4f}",
+                         ov->uv[0].scale_x, ov->uv[0].scale_y, ov->uv[0].offset_x, ov->uv[0].offset_y);
+            }
+            if (tex1) {
+                LOG_INFO(Lib_Hmd, "Overlay 1: {}x{} addr={:#x} fmt={} num_fmt={}",
+                         tex1->width + 1, tex1->height + 1, tex1->Address(),
+                         u32(tex1->data_format), u32(tex1->num_format));
+                LOG_INFO(Lib_Hmd, "Overlay UV 1: scale {:.4f}/{:.4f} offset {:.4f}/{:.4f}",
+                         ov->uv[1].scale_x, ov->uv[1].scale_y, ov->uv[1].offset_x, ov->uv[1].offset_y);
+            }
+        }
     }
     ++with_overlay_frames;
 
