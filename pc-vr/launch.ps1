@@ -644,7 +644,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Deracine PC VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 514)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 404)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -654,50 +654,11 @@ function Show-Menu {
 
     $y = 14
     $title = New-Object System.Windows.Forms.Label
-    $title.Text = "Déraciné - PC VR"
+    $title.Text = "Deracine - PC VR"
     $title.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
     $title.SetBounds(16, $y, 520, 26)
     $form.Controls.Add($title)
     $y += 40
-
-    # Resolution.
-    $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Resolution of each eye"
-    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
-    $label.SetBounds(16, $y, 520, 20)
-    $form.Controls.Add($label)
-    $y += 22
-    $resolution = New-Object System.Windows.Forms.TrackBar
-    $resolution.Name = "resolution"
-    $resolution.Minimum = 0
-    $resolution.Maximum = $widths.Count - 1
-    $resolution.TickFrequency = 1
-    $resolution.LargeChange = 1
-    $resolution.SetBounds(12, $y, 530, 40)
-    $current = 0
-    [void][int]::TryParse((Setting "resolution" "2880"), [ref]$current)
-    $index = [array]::IndexOf($widths, $current)
-    if ($index -lt 0) { $index = [array]::IndexOf($widths, 2880) }
-    $resolution.Value = $index
-    $form.Controls.Add($resolution)
-    $y += 42
-    $resolutionText = New-Object System.Windows.Forms.Label
-    $resolutionText.SetBounds(16, $y, 530, 38)
-    $form.Controls.Add($resolutionText)
-    $update = {
-        $w = $widths[$resolution.Value]
-        $h = EyeHeight $w
-        $times = ($w * $h) / (1440.0 * 1536.0)
-        if ($w -lt 1440) {
-            $resolutionText.Text = "$w x $h pixels an eye: one of the console's smaller sizes, for a headset with fewer pixels (a Rift S has 1280 x 1440 an eye). The game keeps to it."
-        } else {
-            $what = if ($w -eq 1440) { "the console's own, as a PlayStation 4 Pro draws it" } else { "{0:N2} times the pixels of the console" -f $times }
-            $resolutionText.Text = "$w x $h pixels an eye: $what. The game draws smaller by itself when the graphics card cannot keep up."
-        }
-    }
-    $resolution.Add_ValueChanged($update)
-    & $update
-    $y += 46
 
     # Frame rate.
     $label = New-Object System.Windows.Forms.Label
@@ -820,7 +781,6 @@ function Show-Menu {
 
     $result = Show-Form $form
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
-    Save-Setting "resolution" ($widths[$resolution.Value])
     Save-Setting "fps" ($caps[$fps.SelectedIndex])
     if ($language.SelectedIndex -ne $languageBefore) {
         Save-Setting "language" ($(if ($language.SelectedIndex -le 0) { "windows" } else { $gameLanguages[$language.SelectedIndex - 1] }))
