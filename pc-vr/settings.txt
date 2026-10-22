@@ -49,3 +49,5 @@ move_pitch=-45
 move_y=0.000
 move_z=-0.135
 
+# Swap hands: 0 (default: Right controller = Right Hand / Teleport, Left controller = Left Hand / Watch), 1 (swap hands)
+#swap_hands=0

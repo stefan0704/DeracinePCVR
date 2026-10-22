@@ -1442,10 +1442,19 @@ struct OpenXrHost::Impl {
                 }
                 hand_state.tracked = true;
             }
-            Runtime::Instance().UpdateHand(hand, hand_state);
+            static const bool swap_hands_env = [] {
+                const char* val = std::getenv("SHADPS4_SWAP_HANDS");
+                return val != nullptr && (std::string_view(val) == "1" || std::string_view(val) == "true");
+            }();
+            // In Deracine (PSVR):
+            // Move 0 is the primary hand (Right Hand, Red LED: Teleport, Interact).
+            // Move 1 is the secondary hand (Left Hand, Blue LED: Watch, Inventory).
+            // By default: Right Quest (hand 1) -> Move 0; Left Quest (hand 0) -> Move 1.
+            const int target_move_slot = !swap_hands_env ? (hand == 0 ? 1 : 0) : hand;
+            Runtime::Instance().UpdateHand(target_move_slot, hand_state);
         }
 
-        // Left hand (hand 0):
+        // Left Quest controller:
         u16 left_move_buttons = 0;
         // On Quest/PCVR, Grip is the natural Grab button (Move Trigger in PSVR)
         const float left_grab = std::max(left_grip, 0.0f);
@@ -1456,7 +1465,7 @@ struct OpenXrHost::Impl {
         if (triangle) left_move_buttons |= (1 << 7) | (1 << 4); // Square + Triangle (Quest Y -> Reloj de Tiempo / Info objeto)
         if (pressed(act_options)) left_move_buttons |= (1 << 3); // Start/Options
 
-        // Right hand (hand 1):
+        // Right Quest controller:
         u16 right_move_buttons = 0;
         // On Quest/PCVR, Grip is the natural Grab button (Move Trigger in PSVR)
         const float right_grab = std::max(right_grip, 0.0f);
@@ -1467,8 +1476,18 @@ struct OpenXrHost::Impl {
         if (finger.x < -0.5f) right_move_buttons |= (1 << 6); // Cross (Right stick left -> Turn left)
         if (finger.x > 0.5f) right_move_buttons |= (1 << 5); // Circle (Right stick right -> Turn right)
 
-        Runtime::Instance().UpdateHandInput(0, left_move_buttons, left_move_trigger);
-        Runtime::Instance().UpdateHandInput(1, right_move_buttons, right_move_trigger);
+        static const bool swap_hands_env = [] {
+            const char* val = std::getenv("SHADPS4_SWAP_HANDS");
+            return val != nullptr && (std::string_view(val) == "1" || std::string_view(val) == "true");
+        }();
+        if (!swap_hands_env) {
+            // Move 0 = Right Quest controller; Move 1 = Left Quest controller
+            Runtime::Instance().UpdateHandInput(0, right_move_buttons, right_move_trigger);
+            Runtime::Instance().UpdateHandInput(1, left_move_buttons, left_move_trigger);
+        } else {
+            Runtime::Instance().UpdateHandInput(0, left_move_buttons, left_move_trigger);
+            Runtime::Instance().UpdateHandInput(1, right_move_buttons, right_move_trigger);
+        }
 
         ApplyRumble(true);
     }
@@ -1480,8 +1499,8 @@ struct OpenXrHost::Impl {
         if (!actions_ready) {
             return;
         }
-        const u8 hand_rumble_left = Runtime::Instance().GetHandVibration(0);
-        const u8 hand_rumble_right = Runtime::Instance().GetHandVibration(1);
+        const u8 hand_rumble_right = Runtime::Instance().GetHandVibration(0);
+        const u8 hand_rumble_left = Runtime::Instance().GetHandVibration(1);
         const u32 wanted = on ? (rumble_wanted.load(std::memory_order_relaxed) |
                                  (u32{hand_rumble_left} << 16) | (u32{hand_rumble_right} << 24)) : 0;
         const auto now = Clock::now();
@@ -1494,8 +1513,15 @@ struct OpenXrHost::Impl {
         rumble_time = now;
         const float heavy = static_cast<float>(wanted & 0xff) / 255.0f;
         const float light = static_cast<float>((wanted >> 8) & 0xff) / 255.0f;
+        static const bool swap_hands_env = [] {
+            const char* val = std::getenv("SHADPS4_SWAP_HANDS");
+            return val != nullptr && (std::string_view(val) == "1" || std::string_view(val) == "true");
+        }();
         for (int hand = 0; hand < 2; ++hand) {
-            const float move_vib = static_cast<float>(hand == 0 ? hand_rumble_left : hand_rumble_right) / 255.0f;
+            const u8 hand_move_rumble =
+                !swap_hands_env ? (hand == 0 ? hand_rumble_left : hand_rumble_right)
+                                : (hand == 0 ? hand_rumble_right : hand_rumble_left);
+            const float move_vib = static_cast<float>(hand_move_rumble) / 255.0f;
             const float pad_vib =
                 hand == 0 ? std::max(heavy, light * 0.4f) : std::max(light, heavy * 0.4f);
             const float amplitude = std::max(move_vib, pad_vib);

@@ -888,6 +888,7 @@ if ((Setting "move_pitch") -ne "") { $env:SHADPS4_MOVE_PITCH = Setting "move_pit
 if ((Setting "move_y") -ne "") { $env:SHADPS4_MOVE_Y = Setting "move_y" }
 if ((Setting "move_z") -ne "") { $env:SHADPS4_MOVE_Z = Setting "move_z" }
 if ((Setting "move_x") -ne "") { $env:SHADPS4_MOVE_X = Setting "move_x" }
+if ((Setting "swap_hands") -ne "") { $env:SHADPS4_SWAP_HANDS = Setting "swap_hands" }
 foreach ($pair in $extraEnv) {
     $at = $pair.IndexOf("=")
     if ($at -ge 1) { Set-Item -Path ("Env:" + $pair.Substring(0, $at)) -Value $pair.Substring($at + 1) }
