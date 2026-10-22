@@ -102,7 +102,7 @@ u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
 
     // Clamp size to the remaining size of the current VMA.
     auto vma = FindVMA(virtual_addr);
-    if (vma == vma_map.end() || !vma->second.IsMapped()) {
+    if (vma == vma_map.end() || (!vma->second.IsMapped() && vma->second.type != VMAType::PoolReserved)) {
         return 0;
     }
     const auto& first_area = vma->second;
@@ -113,9 +113,10 @@ u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
     VAddr expected_next_base = first_area.base + first_area.size;
     ++vma;
 
-    // Keep adding to the size while there is contiguous mapped virtual address space.
-    while (vma != vma_map.end() && vma->second.IsMapped() && vma->second.base == expected_next_base &&
-           clamped_size < size) {
+    // Keep adding to the size while there is contiguous mapped or pooled virtual address space.
+    while (vma != vma_map.end() &&
+           (vma->second.IsMapped() || vma->second.type == VMAType::PoolReserved) &&
+           vma->second.base == expected_next_base && clamped_size < size) {
         clamped_size += vma->second.size;
         expected_next_base += vma->second.size;
         ++vma;

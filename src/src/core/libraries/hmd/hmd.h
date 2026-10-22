@@ -102,6 +102,13 @@ struct OrbisHmdReprojectionParam {
     u8 flags;
 };
 
+/// Parameters for 2D UI / Subtitle overlay layer in reprojection.
+struct OrbisHmdReprojectionOverlayParam {
+    const void* texture[2];        ///< Left and right eye overlay texture (AmdGpu::Image)
+    const void* sampler;          ///< Sampler / params
+    OrbisHmdReprojectionEyeUv uv[2]; ///< UV mapping for overlay
+};
+
 /// Parameters for 2D VR reprojection (splash screen, 2D UI, cinematics in headset).
 struct OrbisHmdReprojection2dVrParam {
     const void* texture;           ///< sce::Gnm::Texture (AmdGpu::Image)
