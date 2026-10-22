@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <vector>
 
 #include "common/logging/log.h"
@@ -519,11 +521,19 @@ s32 PS4_SYSV_ABI sceVrTrackerGpuWait(const OrbisVrTrackerGpuWaitParam* param) {
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerGpuWaitAndCpuProcess() {
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
+    static bool logged_once = false;
+    if (!logged_once) {
+        LOG_INFO(Lib_VrTracker,
+                 "sceVrTrackerGpuWaitAndCpuProcess: pacing camera tracking thread to ~60Hz");
+        logged_once = true;
+    }
     if (!g_library_initialized) {
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
     if (HeadsetConnected()) {
+        // Pace camera tracking thread to 60Hz (~16ms) to avoid CPU core starvation
+        // and eliminate tracking hitches on controllers
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
         return ORBIS_OK;
     }
 
@@ -533,7 +543,7 @@ s32 PS4_SYSV_ABI sceVrTrackerGpuWaitAndCpuProcess() {
 
 s32 PS4_SYSV_ABI
 sceVrTrackerNotifyEndOfCpuProcess(const OrbisVrTrackerNotifyEndOfCpuProcessParam* param) {
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
+    LOG_TRACE(Lib_VrTracker, "called");
     return ORBIS_OK;
 }
 

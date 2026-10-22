@@ -143,6 +143,13 @@ s32 PS4_SYSV_ABI sceVideoOutGetEventData(const Kernel::OrbisKernelEvent* ev, s64
 s32 PS4_SYSV_ABI sceVideoOutColorSettingsSetGamma(SceVideoOutColorSettings* settings, float gamma);
 s32 PS4_SYSV_ABI sceVideoOutAdjustColor(s32 handle, const SceVideoOutColorSettings* settings);
 
+struct HmdOverlayUv {
+    float scale_x = 1.0f;
+    float scale_y = 1.0f;
+    float offset_x = 0.0f;
+    float offset_y = 0.0f;
+};
+
 /// One stereo frame handed to the headset by the HMD reprojection.
 struct HmdFrame {
     std::array<AmdGpu::Image, 2> eye_textures; ///< Guest texture descriptors, left then right.
@@ -152,6 +159,9 @@ struct HmdFrame {
     Core::Vr::Pose render_pose;
     s64 flip_arg;
     s32 display_index; ///< Display buffer the reprojection would scan this frame out from.
+    bool has_overlay = false;
+    std::array<AmdGpu::Image, 2> overlay_textures{};
+    std::array<HmdOverlayUv, 2> overlay_uv{};
 };
 
 // Internal system functions

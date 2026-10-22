@@ -201,9 +201,10 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart(Libraries::Kernel::OrbisKer
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
-                                         const OrbisHmdReprojectionTrackerState* tracker_state,
-                                         s64 flip_arg, s32 option) {
+static s32 sceHmdReprojectionStartInternal(const OrbisHmdReprojectionParam* param,
+                                           const OrbisHmdReprojectionTrackerState* tracker_state,
+                                           s64 flip_arg, s32 option,
+                                           const void* overlay_param) {
     if (param == nullptr || tracker_state == nullptr || param->texture[0] == nullptr ||
         param->texture[1] == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
@@ -212,6 +213,22 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
     Libraries::VideoOut::HmdFrame frame{};
     std::memcpy(&frame.eye_textures[0], param->texture[0], sizeof(AmdGpu::Image));
     std::memcpy(&frame.eye_textures[1], param->texture[1], sizeof(AmdGpu::Image));
+    if (overlay_param != nullptr) {
+        const auto* ov = reinterpret_cast<const OrbisHmdReprojectionOverlayParam*>(overlay_param);
+        if (ov->texture[0] != nullptr) {
+            frame.has_overlay = true;
+            std::memcpy(&frame.overlay_textures[0], ov->texture[0], sizeof(AmdGpu::Image));
+            if (ov->texture[1] != nullptr) {
+                std::memcpy(&frame.overlay_textures[1], ov->texture[1], sizeof(AmdGpu::Image));
+            } else {
+                frame.overlay_textures[1] = frame.overlay_textures[0];
+            }
+            frame.overlay_uv[0] = {ov->uv[0].scale_x, ov->uv[0].scale_y, ov->uv[0].offset_x,
+                                  ov->uv[0].offset_y};
+            frame.overlay_uv[1] = {ov->uv[1].scale_x, ov->uv[1].scale_y, ov->uv[1].offset_x,
+                                  ov->uv[1].offset_y};
+        }
+    }
     frame.fov = FovFromUv(param->uv[0]);
     frame.render_pose = {
         .position{tracker_state->position[0], tracker_state->position[1],
@@ -274,6 +291,12 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
         LOG_ERROR(Lib_Hmd, "Could not queue headset frame: {:#x}", static_cast<u32>(result));
     }
     return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
+                                         const OrbisHmdReprojectionTrackerState* tracker_state,
+                                         s64 flip_arg, s32 option) {
+    return sceHmdReprojectionStartInternal(param, tracker_state, flip_arg, option, nullptr);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam* param,
@@ -425,7 +448,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay(const OrbisHmdReprojectionPa
     }
     ++with_overlay_frames;
 
-    return sceHmdReprojectionStart(param, tracker_state, flip_arg, option);
+    return sceHmdReprojectionStartInternal(param, tracker_state, flip_arg, option, overlay_param);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionStop() {

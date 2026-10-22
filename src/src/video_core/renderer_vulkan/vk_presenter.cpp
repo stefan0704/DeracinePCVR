@@ -10,6 +10,7 @@
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/libraries/videoout/video_out.h"
 #include "core/vr/spectator_view.h"
 #ifdef ENABLE_OPENXR_HOST
 #include "core/vr/openxr_host.h"
@@ -1101,9 +1102,10 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     return frame;
 }
 
-HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textures,
-                                    const Core::Vr::Fov& fov, u32 frame_id,
-                                    u32& eye_width, u32& eye_height) {
+HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_frame, u32 frame_id,
+                                     u32& eye_width, u32& eye_height) {
+    const auto& eye_textures = hmd_frame.eye_textures;
+    const auto& fov = hmd_frame.fov;
     // The guest hands the eyes over as plain textures; they were rendered as color targets, so
     // the cache already holds their contents.
     std::array<VideoCore::TextureCache::ImageDesc, 2> descs;
@@ -1112,6 +1114,23 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
         descs[eye] = VideoCore::TextureCache::ImageDesc{eye_textures[eye], Shader::ImageResource{}};
         image_ids[eye] = texture_cache.FindImage(descs[eye]);
         texture_cache.UpdateImage(image_ids[eye]);
+    }
+
+    std::array<VideoCore::TextureCache::ImageDesc, 2> overlay_descs;
+    std::array<VideoCore::ImageId, 2> overlay_image_ids{};
+    std::array<vk::ImageView, 2> overlay_views{};
+    bool has_overlay = hmd_frame.has_overlay;
+    if (has_overlay) {
+        for (u32 eye = 0; eye < 2; ++eye) {
+            overlay_descs[eye] = VideoCore::TextureCache::ImageDesc{hmd_frame.overlay_textures[eye],
+                                                                     Shader::ImageResource{}};
+            overlay_image_ids[eye] = texture_cache.FindImage(overlay_descs[eye]);
+            if (overlay_image_ids[eye]) {
+                texture_cache.UpdateImage(overlay_image_ids[eye]);
+            } else {
+                has_overlay = false;
+            }
+        }
     }
 
     // Diagnostics: creating <UserDir>/dump_render_targets dumps what the guest has rendered so
@@ -1320,6 +1339,16 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
         image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead,
                       {}, cmdbuf);
     }
+    if (has_overlay) {
+        for (u32 eye = 0; eye < 2; ++eye) {
+            auto view_info = overlay_descs[eye].view_info;
+            view_info.mapping.a = vk::ComponentSwizzle::eIdentity;
+            auto& ov_image = texture_cache.GetImage(overlay_image_ids[eye]);
+            overlay_views[eye] = *ov_image.FindView(view_info).image_view;
+            ov_image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+                             vk::AccessFlagBits2::eShaderRead, {}, cmdbuf);
+        }
+    }
     // Left eye on the left half, right eye on the right half.
     const auto regions_for = [&](const Frame& target) {
         boost::container::static_vector<HostPasses::PostProcessingPass::Region, 2> regions;
@@ -1336,6 +1365,29 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
             for (u32 eye = 0; eye < 2; ++eye) {
                 regions.push_back({
                     .input = eye_views[eye],
+                    .area{
+                        .offset{.x = static_cast<s32>(eye * half_width), .y = 0},
+                        .extent{.width = half_width, .height = target.height},
+                    },
+                });
+            }
+        }
+        return regions;
+    };
+    const auto overlay_regions_for = [&](const Frame& target) {
+        boost::container::static_vector<HostPasses::PostProcessingPass::Region, 2> regions;
+        if (spectator && &target == frame) {
+            const auto bounds = Core::Vr::SpectatorContentRect(target.width, target.height,
+                                                               desktop_aspect, crop);
+            const vk::Rect2D content{{bounds.x, bounds.y}, {bounds.width, bounds.height}};
+            const vk::Rect2D clip{{bounds.x, std::max(0, bounds.y)},
+                                  {bounds.width, std::min(bounds.height, target.height)}};
+            regions.push_back({.input = overlay_views[0], .area = content, .clip = clip});
+        } else {
+            const u32 half_width = target.width / 2;
+            for (u32 eye = 0; eye < 2; ++eye) {
+                regions.push_back({
+                    .input = overlay_views[eye],
                     .area{
                         .offset{.x = static_cast<s32>(eye * half_width), .y = 0},
                         .extent{.width = half_width, .height = target.height},
@@ -1405,6 +1457,9 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
             pp_pass.Render(cmdbuf, regions_for(*frame), *frame, hmd_settings,
                            exported ? std::nullopt : std::optional<u32>{frame_id});
         }
+        if (has_overlay) {
+            pp_pass.RenderOverlay(cmdbuf, overlay_regions_for(*frame), *frame);
+        }
         if (exported && eye_scan) {
             // What the headset's app gets, as the eye copy left it (in the general layout).
             const auto copy_barrier = [&](vk::PipelineStageFlags2 src_stage,
@@ -1454,6 +1509,9 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
         auto local_settings = hmd_settings;
         local_settings.linear_out = 1;
         hmd_pp_pass.Render(cmdbuf, regions_for(*local), *local, local_settings);
+        if (has_overlay) {
+            hmd_pp_pass.RenderOverlay(cmdbuf, overlay_regions_for(*local), *local);
+        }
         DebugState.output_resolution = {local->width, local->height};
     }
     DebugState.game_resolution = {eye_width * 2, eye_height};

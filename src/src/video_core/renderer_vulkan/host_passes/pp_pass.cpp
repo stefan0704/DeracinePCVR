@@ -179,6 +179,34 @@ void PostProcessingPass::Create(const Instance& instance, MasterSemaphore* maste
     pipeline = Check<"create post process pipeline">(device.createGraphicsPipelineUnique(
         /*pipeline_cache*/ {}, pipeline_info));
 
+    const std::array overlay_attachments{
+        vk::PipelineColorBlendAttachmentState{
+            .blendEnable = true,
+            .srcColorBlendFactor = vk::BlendFactor::eSrcAlpha,
+            .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+            .colorBlendOp = vk::BlendOp::eAdd,
+            .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+            .dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+            .alphaBlendOp = vk::BlendOp::eAdd,
+            .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                              vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+        },
+    };
+
+    const vk::PipelineColorBlendStateCreateInfo overlay_color_blending{
+        .logicOpEnable = false,
+        .logicOp = vk::LogicOp::eCopy,
+        .attachmentCount = overlay_attachments.size(),
+        .pAttachments = overlay_attachments.data(),
+        .blendConstants = std::array{1.0f, 1.0f, 1.0f, 1.0f},
+    };
+
+    auto overlay_pipeline_info = pipeline_info;
+    overlay_pipeline_info.pColorBlendState = &overlay_color_blending;
+
+    overlay_pipeline = Check<"create post process overlay pipeline">(
+        device.createGraphicsPipelineUnique(/*pipeline_cache*/ {}, overlay_pipeline_info));
+
     // Once pipeline is compiled, we don't need the shader module anymore
     device.destroyShaderModule(vs_module);
     device.destroyShaderModule(fs_module);
@@ -374,6 +402,135 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, std::span<const Region
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.endDebugUtilsLabelEXT();
     }
+}
+
+void PostProcessingPass::RenderOverlay(vk::CommandBuffer cmdbuf, std::span<const Region> regions,
+                                       Frame& frame) {
+    if (regions.empty() || !overlay_pipeline) {
+        return;
+    }
+
+    const auto pre_barrier = vk::ImageMemoryBarrier2{
+        .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput |
+                        vk::PipelineStageFlagBits2::eFragmentShader,
+        .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite |
+                         vk::AccessFlagBits2::eShaderRead,
+        .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentRead |
+                         vk::AccessFlagBits2::eColorAttachmentWrite,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .image = frame.image,
+        .subresourceRange = simple_subresource,
+    };
+    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &pre_barrier,
+    });
+
+    const std::array<vk::RenderingAttachmentInfo, 1> attachments{{
+        {
+            .imageView = frame.image_view,
+            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eLoad,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+        },
+    }};
+    const vk::RenderingInfo rendering_info{
+        .renderArea{
+            .extent{
+                .width = frame.width,
+                .height = frame.height,
+            },
+        },
+        .layerCount = 1,
+        .colorAttachmentCount = attachments.size(),
+        .pColorAttachments = attachments.data(),
+    };
+
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, *overlay_pipeline);
+    Settings overlay_settings{};
+    overlay_settings.gamma = 1.0f;
+    overlay_settings.hdr = 0;
+    overlay_settings.sharpen = 0.0f;
+    overlay_settings.encoded_in = 1;
+    cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(Settings),
+                         &overlay_settings);
+
+    boost::container::static_vector<vk::DescriptorSet, 4> desc_sets;
+    if (!uses_push_descriptors) {
+        for (const Region& region : regions) {
+            const vk::DescriptorImageInfo image_info{
+                .sampler = *sampler,
+                .imageView = region.input,
+                .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            };
+            const auto desc_set = desc_heap.Commit(*desc_set_layout);
+            device.updateDescriptorSets(
+                vk::WriteDescriptorSet{
+                    .dstSet = desc_set,
+                    .dstBinding = 0,
+                    .dstArrayElement = 0,
+                    .descriptorCount = 1,
+                    .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                    .pImageInfo = &image_info,
+                },
+                {});
+            desc_sets.push_back(desc_set);
+        }
+    }
+
+    cmdbuf.beginRendering(rendering_info);
+    for (size_t i = 0; i < regions.size(); ++i) {
+        const Region& region = regions[i];
+        cmdbuf.setViewport(0, vk::Viewport{
+                                  .x = static_cast<float>(region.area.offset.x),
+                                  .y = static_cast<float>(region.area.offset.y),
+                                  .width = static_cast<float>(region.area.extent.width),
+                                  .height = static_cast<float>(region.area.extent.height),
+                                  .minDepth = 0.0f,
+                                  .maxDepth = 1.0f,
+                              });
+        cmdbuf.setScissor(0, region.clip.value_or(region.area));
+
+        if (uses_push_descriptors) {
+            const vk::DescriptorImageInfo image_info{
+                .sampler = *sampler,
+                .imageView = region.input,
+                .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            };
+            cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0,
+                                        vk::WriteDescriptorSet{
+                                            .dstSet = VK_NULL_HANDLE,
+                                            .dstBinding = 0,
+                                            .dstArrayElement = 0,
+                                            .descriptorCount = 1,
+                                            .descriptorType =
+                                                vk::DescriptorType::eCombinedImageSampler,
+                                            .pImageInfo = &image_info,
+                                        });
+        } else {
+            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0,
+                                      desc_sets[i], {});
+        }
+        cmdbuf.draw(3, 1, 0, 0);
+    }
+    cmdbuf.endRendering();
+
+    const auto post_barrier = vk::ImageMemoryBarrier2{
+        .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+        .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .image = frame.image,
+        .subresourceRange = simple_subresource,
+    };
+    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &post_barrier,
+    });
 }
 
 } // namespace Vulkan::HostPasses
