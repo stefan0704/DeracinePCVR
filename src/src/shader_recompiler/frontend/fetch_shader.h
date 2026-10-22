@@ -28,7 +28,7 @@ struct VertexAttribute {
     u8 sgpr_base;     ///< SGPR that contains the pointer to the list of vertex V#
     u8 dword_offset;  ///< The dword offset of the V# that describes this attribute.
     u8 instance_data; ///< Indicates that the buffer will be accessed in instance rate
-    u8 inst_offset;   ///< Instruction offset applied on the formatted buffer loads
+    u16 inst_offset;  ///< Instruction offset applied on the formatted buffer loads
     u8 data_format{}; ///< Data format override when typed buffer loads are used
     u8 num_format{};  ///< Number format override when typed buffer loads are used
 
@@ -49,7 +49,9 @@ struct VertexAttribute {
     bool operator==(const VertexAttribute& other) const {
         return semantic == other.semantic && dest_vgpr == other.dest_vgpr &&
                num_elements == other.num_elements && sgpr_base == other.sgpr_base &&
-               dword_offset == other.dword_offset && instance_data == other.instance_data;
+               dword_offset == other.dword_offset && instance_data == other.instance_data &&
+               inst_offset == other.inst_offset && data_format == other.data_format &&
+               num_format == other.num_format;
     }
 };
 

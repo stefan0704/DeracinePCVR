@@ -16,8 +16,11 @@ TEST(FmaSplitDiag, SplitsKnownSkinnedVertexHashes) {
     EXPECT_TRUE(ShouldSplitFmaNoContraction(0x27904a0c, Shader::Stage::Vertex));
 }
 
-TEST(FmaSplitDiag, SkipsOtherStages) {
+TEST(FmaSplitDiag, SkipsOtherStagesAndHashes) {
     EXPECT_FALSE(ShouldSplitFmaNoContraction(0x032fd69c, Shader::Stage::Fragment));
+    EXPECT_FALSE(ShouldSplitFmaNoContraction(0x032fd69c, Shader::Stage::Compute));
+    EXPECT_FALSE(ShouldSplitFmaNoContraction(0xbbffe457, Shader::Stage::Vertex));
+    EXPECT_FALSE(ShouldSplitFmaNoContraction(0, Shader::Stage::Vertex));
 }
 
 TEST(FmaSplitDiag, ScanFindsSeparateMulAddAndNoFma) {
