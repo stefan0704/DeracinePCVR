@@ -291,7 +291,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
         // Left eye image is in [0, 0.5], Right eye image is in [0.5, 1.0].
         // With SBS presentation, each eye receives exclusively its own half in the swapchain.
         // Symmetric cinema FOV centered in front of each eye:
-        const float tan_h = 0.50f; // ~26.5 deg half-angle / 53 deg total width
+        const float tan_h = 0.70f; // ~35 deg half-angle / 70 deg total width (closer IMAX cinema view)
         const float tan_v = tan_h * (9.0f / 16.0f);
         frame.fov = {
             .tan_out = tan_h,

@@ -945,13 +945,25 @@ if (Test-Path $cfgPath) {
             $cfgJson.GPU.readbacks_mode = $rbMode
             $changed = $true
         }
-        $copyGpuSetting = Setting "copy_gpu_buffers" ""
+        $copyGpuSetting = Setting "copy_gpu_buffers" "1"
         if ($copyGpuSetting -ne "") {
             $copyVal = ($copyGpuSetting -eq "1" -or $copyGpuSetting -eq "true")
             if ($cfgJson.GPU.copy_gpu_buffers -ne $copyVal) {
                 $cfgJson.GPU.copy_gpu_buffers = $copyVal
                 $changed = $true
             }
+        }
+        if ($null -ne $cfgJson.Vulkan.pipeline_cache_enabled -and -not $cfgJson.Vulkan.pipeline_cache_enabled) {
+            $cfgJson.Vulkan.pipeline_cache_enabled = $true
+            $changed = $true
+        }
+        if ($null -ne $cfgJson.Log.sync -and $cfgJson.Log.sync) {
+            $cfgJson.Log.sync = $false
+            $changed = $true
+        }
+        if ($null -ne $cfgJson.Log.filter -and $cfgJson.Log.filter -ne "*:Info") {
+            $cfgJson.Log.filter = "*:Info"
+            $changed = $true
         }
         if ($changed) {
             $cfgJson | ConvertTo-Json -Depth 10 | Set-Content $cfgPath
