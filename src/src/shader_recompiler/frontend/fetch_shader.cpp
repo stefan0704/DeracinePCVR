@@ -99,13 +99,22 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
         }
 
         if (inst.inst_class == InstClass::ScalarMemRd) {
-            loads[inst.dst[0].code] = VsharpLoad{inst.control.smrd.offset, inst.src[0].code * 2};
+            const u32 count = std::max<u32>(inst.control.smrd.count, 4);
+            for (u32 i = 0; i < count; i += 4) {
+                if (inst.dst[0].code + i < loads.size()) {
+                    loads[inst.dst[0].code + i] = VsharpLoad{
+                        inst.control.smrd.offset + i,
+                        inst.src[0].code * 2
+                    };
+                }
+            }
             continue;
         }
 
         if (inst.opcode == Opcode::V_ADD_I32) {
             const auto vgpr = inst.dst[0].code;
-            const auto sgpr = s8(inst.src[0].code);
+            const auto sgpr = s8(inst.src[0].field == OperandField::ScalarGPR ? inst.src[0].code
+                                                                             : inst.src[1].code);
             switch (vgpr) {
             case 0: // V0 is always the vertex offset
                 data.vertex_offset_sgpr = sgpr;
@@ -114,7 +123,7 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
                 data.instance_offset_sgpr = sgpr;
                 break;
             default:
-                UNREACHABLE();
+                break;
             }
         }
 
@@ -125,8 +134,10 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
             attrib.semantic = semantic_index++;
             attrib.dest_vgpr = inst.src[1].code;
             attrib.num_elements = inst.control.mubuf.count;
-            attrib.sgpr_base = loads[base_sgpr].base_sgpr;
-            attrib.dword_offset = loads[base_sgpr].dword_offset;
+            if (base_sgpr < loads.size()) {
+                attrib.sgpr_base = loads[base_sgpr].base_sgpr;
+                attrib.dword_offset = static_cast<u16>(loads[base_sgpr].dword_offset);
+            }
             attrib.inst_offset = inst.control.mtbuf.offset;
             attrib.instance_data = inst.src[0].code;
             if (IsTypedBufferLoad(inst)) {
