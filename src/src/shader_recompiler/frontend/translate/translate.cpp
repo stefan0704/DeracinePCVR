@@ -1128,7 +1128,9 @@ void Translator::EmitFetch(const GcnInst& inst) {
         const auto converted =
             IR::ApplyReadNumberConversionVec4(ir, values, buffer.GetNumberConversion());
         const auto swizzled = ApplySwizzle(ir, converted, buffer.DstSelect());
-        for (u32 i = 0; i < 4; i++) {
+        const u32 num_elements =
+            attrib.num_elements > 0 ? std::min<u32>(attrib.num_elements, 4) : 4;
+        for (u32 i = 0; i < num_elements; i++) {
             ir.SetVectorReg(dst_reg++, IR::F32{ir.CompositeExtract(swizzled, i)});
         }
     }
