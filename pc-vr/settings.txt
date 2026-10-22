@@ -36,11 +36,11 @@ resolution=2520
 fps=120
 fov=100
 menu=1
-desktop_view=spectator
+desktop_view=stereo
 desktop_crop=0
 
-# GPU Readbacks mode: "precise" (fixes missing face geometry/morph glitch), "relaxed", "disabled"
-readbacks=precise
+# GPU Readbacks mode: "relaxed" (fixes missing face geometry/morph glitch), "precise", "disabled"
+readbacks=relaxed
 copy_gpu_buffers=1
 
 # Move controller 6DoF calibration (pitch in degrees, offsets in meters):
