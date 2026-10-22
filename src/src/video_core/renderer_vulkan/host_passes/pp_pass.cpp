@@ -410,6 +410,12 @@ void PostProcessingPass::RenderOverlay(vk::CommandBuffer cmdbuf, std::span<const
         return;
     }
 
+    constexpr vk::ImageSubresourceRange simple_subresource = {
+        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .levelCount = 1,
+        .layerCount = 1,
+    };
+
     const auto pre_barrier = vk::ImageMemoryBarrier2{
         .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput |
                         vk::PipelineStageFlagBits2::eFragmentShader,
