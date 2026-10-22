@@ -66,6 +66,9 @@ public:
     void Render(vk::CommandBuffer cmdbuf, std::span<const Region> regions, Frame& output,
                 Settings settings, std::optional<u32> marker = std::nullopt);
 
+    /// Draws overlay regions over existing content in output frame using alpha blending.
+    void RenderOverlay(vk::CommandBuffer cmdbuf, std::span<const Region> regions, Frame& output);
+
 private:
     vk::Device device{};
     bool uses_push_descriptors{};
@@ -75,6 +78,7 @@ private:
     }};
     DescriptorHeap desc_heap;
     vk::UniquePipeline pipeline{};
+    vk::UniquePipeline overlay_pipeline{};
     vk::UniquePipelineLayout pipeline_layout{};
     vk::UniqueDescriptorSetLayout desc_set_layout{};
     vk::UniqueSampler sampler{};

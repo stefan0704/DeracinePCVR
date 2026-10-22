@@ -24,6 +24,10 @@ namespace AmdGpu {
 struct Liverpool;
 }
 
+namespace Libraries::VideoOut {
+struct HmdFrame;
+}
+
 namespace Vulkan {
 
 struct Frame {
@@ -115,8 +119,7 @@ public:
 
     /// Composes the two eye images of a headset frame side by side into a presentation frame
     /// and stamps it with `frame_id` so the host can match it to a head pose.
-    HmdFrames PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textures,
-                              const Core::Vr::Fov& fov, u32 frame_id,
+    HmdFrames PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_frame, u32 frame_id,
                               u32& eye_width, u32& eye_height);
 
     /// Hands a frame made by PrepareHmdFrame to the VR host. Returns false for a frame that is
