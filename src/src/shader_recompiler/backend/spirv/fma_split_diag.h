@@ -24,10 +24,7 @@ inline constexpr u32 kSpvExecutionModeContractionOff = 31;
 inline constexpr u32 kGLSLstd450Fma = 50;
 
 [[nodiscard]] inline bool ShouldSplitFmaNoContraction(u64 pgm_hash, Stage stage) {
-    if (stage != Stage::Vertex) {
-        return false;
-    }
-    return pgm_hash == kDsrSkinnedVs032fd69c || pgm_hash == kDsrSkinnedVs27904a0c;
+    return stage == Stage::Vertex || stage == Stage::Compute;
 }
 
 struct SpirvFmaScan {
