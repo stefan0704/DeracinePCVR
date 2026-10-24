@@ -20,7 +20,7 @@ namespace Shader::Backend::SPIRV {
 /// walking mesh is fetched at quotient x 80 bytes off, and the mesh explodes
 /// while idle (different divisor values) stays intact.
 [[nodiscard]] inline bool ShouldRefineRecip32(u64 pgm_hash, Stage stage) {
-    return stage == Stage::Vertex || stage == Stage::Compute;
+    return stage == Stage::Vertex;
 }
 
 } // namespace Shader::Backend::SPIRV

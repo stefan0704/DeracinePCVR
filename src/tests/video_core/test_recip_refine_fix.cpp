@@ -9,17 +9,16 @@ namespace {
 
 using Shader::Backend::SPIRV::ShouldRefineRecip32;
 
-TEST(RecipRefineFix, RefinesVertexAndComputeShaders) {
+TEST(RecipRefineFix, RefinesAllVertexShaders) {
     EXPECT_TRUE(ShouldRefineRecip32(0x032fd69c, Shader::Stage::Vertex));
     EXPECT_TRUE(ShouldRefineRecip32(0x27904a0c, Shader::Stage::Vertex));
     EXPECT_TRUE(ShouldRefineRecip32(0xbbffe457, Shader::Stage::Vertex));
     EXPECT_TRUE(ShouldRefineRecip32(0, Shader::Stage::Vertex));
-    EXPECT_TRUE(ShouldRefineRecip32(0x032fd69c, Shader::Stage::Compute));
-    EXPECT_TRUE(ShouldRefineRecip32(0, Shader::Stage::Compute));
 }
 
 TEST(RecipRefineFix, SkipsOtherStages) {
     EXPECT_FALSE(ShouldRefineRecip32(0x032fd69c, Shader::Stage::Fragment));
+    EXPECT_FALSE(ShouldRefineRecip32(0x032fd69c, Shader::Stage::Compute));
 }
 
 } // namespace
