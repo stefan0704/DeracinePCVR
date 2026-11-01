@@ -15,16 +15,14 @@
 #include "core/aerolib/stubs.h"
 #include "core/devtools/widget/module_list.h"
 #include "core/emulator_settings.h"
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-#include "core/guest_cpu/fex_guest_cpu.h"
-#include "core/guest_cpu/fex_hle_bridge.h"
-#include "core/guest_cpu/guest_memory_validation_cache.h"
-#include "core/guest_cpu/hle_call_adapter.h"
-#endif
+#include "core/file_sys/backends/host_fs.h"
+#include "core/file_sys/fs.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/memory.h"
 #include "core/libraries/kernel/threads.h"
+#include "core/libraries/libc_internal/libc_internal.h"
 #include "core/libraries/sysmodule/sysmodule.h"
+#include "core/libraries/sysmodule/sysmodule_internal.h"
 #include "core/linker.h"
 #include "core/memory.h"
 #include "core/tls.h"
@@ -40,87 +38,7 @@ static PS4_SYSV_ABI void ProgramExitFunc() {
     LOG_ERROR(Core_Linker, "Exit function called");
 }
 
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-static bool ValidateGuestMemory(void* context, std::uintptr_t address, std::size_t size,
-                                bool writable) {
-    if (context == nullptr || address == 0 || size == 0 || address > UINTPTR_MAX - size) {
-        return false;
-    }
-    auto* memory = static_cast<MemoryManager*>(context);
-    const auto required = static_cast<u32>(MemoryProt::CpuRead) |
-                          (writable ? static_cast<u32>(MemoryProt::CpuWrite) : 0);
-    static thread_local GuestCpu::GuestMemoryValidationCache validation_cache;
-    const auto generation = memory->MappingGeneration();
-    if (validation_cache.Contains(memory, generation, address, size, required)) {
-        return true;
-    }
-    const auto end = address + size;
-    auto cursor = address;
-    while (cursor < end) {
-        void* range_start{};
-        void* range_end{};
-        u32 protection{};
-        u64 range_generation{};
-        if (memory->QueryProtection(cursor, &range_start, &range_end, &protection,
-                                    &range_generation) != ORBIS_OK) {
-            return false;
-        }
-        const auto mapped_begin = reinterpret_cast<std::uintptr_t>(range_start);
-        const auto mapped_end = reinterpret_cast<std::uintptr_t>(range_end);
-        if (mapped_end <= cursor || (protection & required) != required) {
-            return false;
-        }
-        validation_cache.Store(memory, range_generation, mapped_begin, mapped_end, protection);
-        cursor = std::min(end, mapped_end);
-    }
-    return true;
-}
-
-static bool SealGuestExecutableMemory(MemoryManager& memory, std::uintptr_t begin,
-                                      std::size_t size) {
-    const auto result = memory.SealGuestExecutable(begin, size);
-    if (result == ORBIS_OK) return true;
-    LOG_ERROR(Core_Linker, "Unable to seal FEX guest code begin={:#x} size={:#x}: {}", begin,
-              size, result);
-    return false;
-}
-
-// HLE veneers live in host mmap pages outside the guest VMM. Dynamic PRX
-// loads allocate more of them after the FEX thread snapshot is taken, so the
-// dynamic QueryGuestExecutableRange path must see them here. Context layout
-// matches Linker::FexExecutableQueryContext.
-static std::optional<GuestExecutionRange> QueryGuestExecutableMemory(void* context,
-                                                                     std::uintptr_t address) {
-    if (context == nullptr || address == 0) return std::nullopt;
-    auto* query = static_cast<FexExecutableQueryContext*>(context);
-    if (query->veneers != nullptr) {
-        if (auto range = query->veneers->QueryExecutableRange(address)) {
-            return range;
-        }
-    }
-    if (query->memory == nullptr) return std::nullopt;
-    auto* memory = query->memory;
-    void* range_start{};
-    void* range_end{};
-    u32 protection{};
-    if (memory->QueryProtection(address, &range_start, &range_end, &protection) != ORBIS_OK ||
-        (protection & static_cast<u32>(MemoryProt::CpuExec)) == 0 ||
-        (protection & static_cast<u32>(MemoryProt::CpuWrite)) != 0) {
-        return std::nullopt;
-    }
-    const auto begin = reinterpret_cast<std::uintptr_t>(range_start);
-    const auto end = reinterpret_cast<std::uintptr_t>(range_end);
-    if (begin == 0 || end <= begin) return std::nullopt;
-    if (!SealGuestExecutableMemory(*memory, begin, end - begin)) return std::nullopt;
-    return GuestExecutionRange{begin, end - begin, true, false};
-}
-
-static void ReportGuestHleFailure(void*, const GuestCpu::HleCallFailure& failure) {
-    LOG_ERROR(Core_Linker, "FEX HLE call {} failed: {}", failure.name, failure.error);
-}
-#endif
-
-static PS4_SYSV_ABI void* RunMainEntry [[noreturn]] (EntryParams* params) {
+static PS4_SYSV_ABI void* RunMainEntry [[noreturn]](EntryParams* params) {
 #ifdef ARCH_X86_64
     // Start shared library modules
     asm volatile("andq $-16, %%rsp\n" // Align to 16 bytes
@@ -142,341 +60,13 @@ static PS4_SYSV_ABI void* RunMainEntry [[noreturn]] (EntryParams* params) {
                  : "rax", "rsi", "rdi");
     UNREACHABLE();
 #else
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-    auto* linker = Common::Singleton<Linker>::Instance();
-    const auto result = linker->RunGuestMain(params);
-    if (const auto* failure = std::get_if<GuestExecutionFailure>(&result)) {
-        LOG_CRITICAL(Core_Linker, "FEX main entry failed at stage {}: {}",
-                     static_cast<int>(failure->Stage), failure->Error);
-    } else {
-        LOG_CRITICAL(Core_Linker, "FEX main entry returned unexpectedly with {:#x}",
-                     std::get<u64>(result));
-    }
-    std::abort();
-#else
-    UNREACHABLE_MSG("RunMainEntry requires an x86-64 host or FEX guest CPU support.");
-#endif
+    UNREACHABLE_MSG("RunMainEntry unimplemented for current architecture.");
 #endif
 }
 
-Linker::Linker() : memory{Memory::Instance()} {
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-    m_hle_veneers = std::make_unique<GuestCpu::HleVeneerAllocator>();
-#endif
-}
+Linker::Linker() : memory{Memory::Instance()} {}
 
 Linker::~Linker() = default;
-
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-namespace {
-
-constexpr std::size_t FexTemporaryStackSize = 1_MB;
-
-class GuestStackMapping final {
-public:
-    GuestStackMapping(MemoryManager& memory_, std::size_t size_, std::string_view name)
-        : memory{memory_}, size{size_} {
-        void* mapped{};
-        const auto result = memory.MapMemory(&mapped, 0, size, MemoryProt::CpuReadWrite,
-                                             MemoryMapFlags::NoFlags, VMAType::Stack, name);
-        if (result == ORBIS_OK) {
-            base = reinterpret_cast<VAddr>(mapped);
-        } else {
-            error = result;
-        }
-    }
-
-    GuestStackMapping(const GuestStackMapping&) = delete;
-    GuestStackMapping& operator=(const GuestStackMapping&) = delete;
-
-    ~GuestStackMapping() {
-        if (base != 0) {
-            const auto result = memory.UnmapMemory(base, size);
-            if (result != ORBIS_OK) {
-                LOG_ERROR(Core_Linker, "Unable to unmap FEX guest stack {:#x}: {}", base,
-                          result);
-            }
-        }
-    }
-
-    bool IsValid() const {
-        return base != 0;
-    }
-
-    VAddr Top() const {
-        return base + size;
-    }
-
-    int Error() const {
-        return error;
-    }
-
-private:
-    MemoryManager& memory;
-    std::size_t size;
-    VAddr base{};
-    int error{};
-};
-
-std::optional<GuestExecutionRange> QueryGuestMemoryRange(MemoryManager& memory,
-                                                         std::uintptr_t address,
-                                                         bool executable, bool writable) {
-    void* range_start{};
-    void* range_end{};
-    u32 protection{};
-    if (memory.QueryProtection(address, &range_start, &range_end, &protection) != ORBIS_OK) {
-        return std::nullopt;
-    }
-    if (executable && ((protection & static_cast<u32>(MemoryProt::CpuExec)) == 0 ||
-                       (protection & static_cast<u32>(MemoryProt::CpuWrite)) != 0)) {
-        return std::nullopt;
-    }
-    if (writable && ((protection & static_cast<u32>(MemoryProt::CpuWrite)) == 0 ||
-                     (protection & static_cast<u32>(MemoryProt::CpuExec)) != 0)) {
-        return std::nullopt;
-    }
-    const auto begin = reinterpret_cast<std::uintptr_t>(range_start);
-    const auto end = reinterpret_cast<std::uintptr_t>(range_end);
-    if (begin == 0 || end <= begin) return std::nullopt;
-    if (executable && !SealGuestExecutableMemory(memory, begin, end - begin)) {
-        return std::nullopt;
-    }
-    return GuestExecutionRange{begin, end - begin, executable, writable};
-}
-
-std::optional<GuestExecutionFailure> NormalizeGuestRanges(
-    std::vector<GuestExecutionRange>& ranges) {
-    std::ranges::sort(ranges, {}, &GuestExecutionRange::Begin);
-    for (std::size_t index = 0; index < ranges.size(); ++index) {
-        const auto& range = ranges[index];
-        if (range.Begin == 0 || range.Size == 0 || range.Begin + range.Size < range.Begin) {
-            LOG_ERROR(Core_Linker,
-                      "Invalid FEX guest range index={} begin={:#x} size={:#x} executable={} "
-                      "writable={}",
-                      index, range.Begin, range.Size, range.Executable, range.Writable);
-            return GuestExecutionFailure{GuestExecutionStage::Mapping, EINVAL};
-        }
-        if (index != 0) {
-            const auto& previous = ranges[index - 1];
-            if (previous.Begin + previous.Size > range.Begin) {
-                LOG_ERROR(Core_Linker,
-                          "FEX guest range overlap previous_index={} previous_begin={:#x} "
-                          "previous_size={:#x} previous_executable={} previous_writable={} "
-                          "index={} begin={:#x} size={:#x} executable={} writable={}",
-                          index - 1, previous.Begin, previous.Size, previous.Executable,
-                          previous.Writable, index, range.Begin, range.Size, range.Executable,
-                          range.Writable);
-                return GuestExecutionFailure{GuestExecutionStage::Mapping, EACCES};
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-void SetGuestIntegerArguments(GuestExecutionRequest& request,
-                              std::span<const u64> arguments) {
-    constexpr std::array<std::size_t, 6> registers{7, 6, 2, 1, 8, 9};
-    const auto count = std::min(arguments.size(), registers.size());
-    for (std::size_t index = 0; index < count; ++index) {
-        request.Gpr[registers[index]] = arguments[index];
-    }
-}
-
-} // namespace
-
-VAddr Linker::AllocateHleVeneer(std::shared_ptr<GuestCpu::HleCallAdapter> adapter,
-                                std::string_view name) {
-    const auto registered = m_hle_symbols.GetHleCallRegistry().Register(std::move(adapter), name);
-    if (registered == nullptr) {
-        return 0;
-    }
-    const auto veneer = m_hle_veneers->Allocate(*registered);
-    if (const auto* failure = std::get_if<GuestCpu::HleVeneerFailure>(&veneer)) {
-        LOG_ERROR(Core_Linker, "Unable to allocate FEX HLE veneer for {}: {}", name,
-                  failure->error);
-        return 0;
-    }
-    return std::get<u64>(veneer);
-}
-
-std::optional<GuestExecutionFailure> Linker::InitializeFexRuntime() {
-    std::scoped_lock lock{m_fex_runtime_mutex};
-    if (m_fex_backend != nullptr) return std::nullopt;
-
-    auto& registry = m_hle_symbols.GetHleCallRegistry();
-    if (m_fex_exit_veneer == 0) {
-        const auto adapter = registry.Register(GuestCpu::MakeHleCallAdapter(ProgramExitFunc),
-                                               "bachata.program_exit");
-        if (adapter == nullptr) {
-            return GuestExecutionFailure{GuestExecutionStage::Execute, EIO};
-        }
-        const auto veneer = m_hle_veneers->Allocate(*adapter);
-        if (const auto* failure = std::get_if<GuestCpu::HleVeneerFailure>(&veneer)) {
-            return GuestExecutionFailure{GuestExecutionStage::Mapping, failure->error};
-        }
-        m_fex_exit_veneer = std::get<u64>(veneer);
-    }
-
-    m_fex_exec_query = {memory, m_hle_veneers.get()};
-    m_fex_bridge = std::make_unique<GuestCpu::HleGuestBridge>(
-        registry, ValidateGuestMemory, memory, ReportGuestHleFailure, nullptr,
-        QueryGuestExecutableMemory, &m_fex_exec_query);
-    auto backend = FexGuestCpuBackend::Create(*m_fex_bridge);
-    if (const auto* failure = std::get_if<GuestExecutionFailure>(&backend)) {
-        m_fex_bridge.reset();
-        return *failure;
-    }
-    m_fex_backend =
-        std::move(std::get<std::unique_ptr<FexGuestCpuBackend>>(backend));
-    return std::nullopt;
-}
-
-Linker::GuestFunctionResult Linker::RunGuestFunction(VAddr entry,
-                                                      std::span<const u64> arguments,
-                                                      VAddr stack_top) {
-    if (const auto failure = InitializeFexRuntime()) return *failure;
-
-    auto nested = m_fex_backend->CallGuest(entry, arguments);
-    if (const auto* state = std::get_if<GuestExecutionState>(&nested)) {
-        return state->Gpr[0];
-    }
-    const auto nestedFailure = std::get<GuestExecutionFailure>(nested);
-    if (nestedFailure.Stage != GuestExecutionStage::Thread || nestedFailure.Error != ENXIO) {
-        return nestedFailure;
-    }
-
-    std::optional<GuestStackMapping> temporaryStack;
-    if (stack_top == 0) {
-        temporaryStack.emplace(*memory, FexTemporaryStackSize, "FEX guest call stack");
-        if (!temporaryStack->IsValid()) {
-            return GuestExecutionFailure{GuestExecutionStage::Mapping,
-                                         temporaryStack->Error() == 0 ? ENOMEM
-                                                                      : temporaryStack->Error()};
-        }
-        stack_top = temporaryStack->Top();
-    }
-    if (arguments.size() > 32 || stack_top < 0x1000) {
-        return GuestExecutionFailure{GuestExecutionStage::Request, E2BIG};
-    }
-
-    const auto stackArgumentBytes =
-        (arguments.size() > 6 ? arguments.size() - 6 : 0) * sizeof(u64);
-    if (stack_top < stackArgumentBytes + sizeof(u64)) {
-        return GuestExecutionFailure{GuestExecutionStage::Request, EOVERFLOW};
-    }
-    const auto argumentTop = Common::AlignDown(stack_top - stackArgumentBytes, 16ULL);
-    const auto rsp = argumentTop - sizeof(u64);
-    const auto returnAddress = m_fex_backend->ReturnAddress();
-    if (!ValidateGuestMemory(memory, rsp, sizeof(u64) + stackArgumentBytes, true) ||
-        returnAddress == 0) {
-        return GuestExecutionFailure{GuestExecutionStage::Mapping, EFAULT};
-    }
-    std::memcpy(reinterpret_cast<void*>(rsp), &returnAddress, sizeof(returnAddress));
-    for (std::size_t index = 6; index < arguments.size(); ++index) {
-        std::memcpy(reinterpret_cast<void*>(rsp + sizeof(u64) * (index - 5)),
-                    &arguments[index], sizeof(u64));
-    }
-
-    const auto codeRange = QueryGuestMemoryRange(*memory, entry, true, false);
-    const auto stackRange = QueryGuestMemoryRange(*memory, rsp, false, true);
-    if (!codeRange || !stackRange) {
-        return GuestExecutionFailure{GuestExecutionStage::Mapping, EFAULT};
-    }
-
-    GuestExecutionRequest request;
-    request.Rip = entry;
-    request.Rsp = rsp;
-    request.Rflags = 1U << 1;
-    request.FsBase = reinterpret_cast<std::uintptr_t>(GetTcbBase());
-    SetGuestIntegerArguments(request, arguments);
-    request.MappedRanges = {*codeRange, *stackRange, m_fex_backend->ReturnRange(),
-                            m_fex_backend->CallbackReturnRange()};
-    const auto veneerRanges = m_hle_veneers->GetExecutableRanges();
-    request.MappedRanges.insert(request.MappedRanges.end(), veneerRanges.begin(),
-                                veneerRanges.end());
-    if (const auto failure = NormalizeGuestRanges(request.MappedRanges)) return *failure;
-
-    const auto result = m_fex_backend->Run(request);
-    if (const auto* failure = std::get_if<GuestExecutionFailure>(&result)) return *failure;
-    const auto& state = std::get<GuestExecutionState>(result);
-    if (state.StopReason != GuestStopReason::Halted ||
-        state.Rip < returnAddress || state.Rip >= returnAddress + 0x1000) {
-        LOG_CRITICAL(Core_Linker,
-                     "FEX guest function did not halt at return veneer entry={:#x} rip={:#x} "
-                     "last_rip={:#x} rsp={:#x} stop={} return={:#x}",
-                     entry, state.Rip, state.LastRip, state.Rsp,
-                     static_cast<int>(state.StopReason), returnAddress);
-        return GuestExecutionFailure{GuestExecutionStage::Execute, EPROTO};
-    }
-    return state.Gpr[0];
-}
-
-Linker::GuestFunctionResult Linker::RunGuestMain(EntryParams* params) {
-    if (params == nullptr || params->entry_addr == 0 || params->argc < 0 || params->argc > 33) {
-        return GuestExecutionFailure{GuestExecutionStage::Request, EINVAL};
-    }
-    if (const auto failure = InitializeFexRuntime()) return *failure;
-
-    std::size_t stackSize = FexTemporaryStackSize;
-    if (const auto* proc = GetProcParam(); proc != nullptr && proc->main_thread_stack_size != nullptr) {
-        stackSize = std::clamp<std::size_t>(*proc->main_thread_stack_size, 64_KB, 64_MB);
-        stackSize = Common::AlignUp(stackSize, 16_KB);
-    }
-    GuestStackMapping stack{*memory, stackSize, "FEX main guest stack"};
-    if (!stack.IsValid()) {
-        return GuestExecutionFailure{GuestExecutionStage::Mapping,
-                                     stack.Error() == 0 ? ENOMEM : stack.Error()};
-    }
-
-    EntryParams guestParams = *params;
-    auto cursor = stack.Top();
-    for (int index = params->argc - 1; index >= 0; --index) {
-        if (params->argv[index] == nullptr) {
-            guestParams.argv[index] = nullptr;
-            continue;
-        }
-        const auto length = std::strlen(params->argv[index]) + 1;
-        if (cursor < length) {
-            return GuestExecutionFailure{GuestExecutionStage::Mapping, EOVERFLOW};
-        }
-        cursor -= length;
-        std::memcpy(reinterpret_cast<void*>(cursor), params->argv[index], length);
-        guestParams.argv[index] = reinterpret_cast<const char*>(cursor);
-    }
-    cursor = Common::AlignDown(cursor - sizeof(EntryParams), 16ULL);
-    std::memcpy(reinterpret_cast<void*>(cursor), &guestParams, sizeof(guestParams));
-    const auto guestParamsAddress = cursor;
-    if (cursor < 24) {
-        return GuestExecutionFailure{GuestExecutionStage::Mapping, EOVERFLOW};
-    }
-    const auto rsp = Common::AlignDown(cursor - 24, 16ULL) + 8;
-    std::memcpy(reinterpret_cast<void*>(rsp), &guestParams, 16);
-
-    const auto codeRange = QueryGuestMemoryRange(*memory, params->entry_addr, true, false);
-    const auto stackRange = QueryGuestMemoryRange(*memory, rsp, false, true);
-    if (!codeRange || !stackRange) {
-        return GuestExecutionFailure{GuestExecutionStage::Mapping, EFAULT};
-    }
-
-    GuestExecutionRequest request;
-    request.Rip = params->entry_addr;
-    request.Rsp = rsp;
-    request.Rflags = 1U << 1;
-    request.Gpr[7] = guestParamsAddress;
-    request.Gpr[6] = m_fex_exit_veneer;
-    request.FsBase = reinterpret_cast<std::uintptr_t>(GetTcbBase());
-    request.MappedRanges = {*codeRange, *stackRange, m_fex_backend->ReturnRange(),
-                            m_fex_backend->CallbackReturnRange()};
-    const auto veneerRanges = m_hle_veneers->GetExecutableRanges();
-    request.MappedRanges.insert(request.MappedRanges.end(), veneerRanges.begin(),
-                                veneerRanges.end());
-    if (const auto failure = NormalizeGuestRanges(request.MappedRanges)) return *failure;
-
-    const auto result = m_fex_backend->Run(request);
-    if (const auto* failure = std::get_if<GuestExecutionFailure>(&result)) return *failure;
-    return std::get<GuestExecutionState>(result).Gpr[0];
-}
-#endif
 
 void Linker::Execute(const std::vector<std::string>& args) {
     if (EmulatorSettings.IsDebugDump()) {
@@ -487,9 +77,38 @@ void Linker::Execute(const std::vector<std::string>& args) {
     Module* module = m_modules[0].get();
     static_tls_size = module->tls.offset = module->tls.image_size;
 
+    // Map libSceLibcInternal
+    const auto& libc_internal_path =
+        EmulatorSettings.GetSysModulesDir() / "libSceLibcInternal.sprx";
+    bool has_libcinternal = false;
+    if (std::filesystem::exists(libc_internal_path)) {
+        LoadModule(libc_internal_path);
+        has_libcinternal = true;
+    } else {
+        // Need to load HLE, LLE isn't present
+        LOG_INFO(Core_Linker, "Can't Load libSceLibcInternal.sprx switching to HLE");
+        Libraries::LibcInternal::RegisterLib(&GetHLESymbols());
+    }
+
     // Relocate all modules
-    for (const auto& m : m_modules) {
-        Relocate(m.get());
+    RelocateAllImports();
+
+    // libkernel entry is responsible for initializing malloc-related elements of libSceLibcInternal
+    // this is done through calling _malloc_init, and sceLibcInternalMemoryMutexEnable.
+    static PS4_SYSV_ABI s32 (*malloc_init)() = nullptr;
+    static PS4_SYSV_ABI void (*sceLibcInternalMemoryMutexEnable)() = nullptr;
+
+    if (has_libcinternal) {
+        for (const auto& m : m_modules) {
+            const auto& mod = m.get();
+            if (mod->name.contains("libSceLibcInternal.sprx")) {
+                malloc_init =
+                    reinterpret_cast<PS4_SYSV_ABI s32 (*)()>(mod->FindByName("_malloc_init"));
+                sceLibcInternalMemoryMutexEnable = reinterpret_cast<PS4_SYSV_ABI void (*)()>(
+                    mod->FindByName("sceLibcInternalMemoryMutexEnable"));
+                break;
+            }
+        }
     }
 
     // Configure the direct and flexible memory regions.
@@ -527,9 +146,8 @@ void Linker::Execute(const std::vector<std::string>& args) {
 
     memory->SetupMemoryRegions(fmem_size, use_extended_mem1, use_extended_mem2);
 
-    main_thread.Run([this, module, &args](std::stop_token) {
+    main_thread.Run([this, module, &args, has_libcinternal](std::stop_token) {
         Common::SetCurrentThreadName("Game:Main");
-        std::set_terminate(Common::Log::Terminate);
 
 #ifndef _WIN32 // Clear any existing signal mask for game threads.
         sigset_t emptyset;
@@ -538,6 +156,18 @@ void Linker::Execute(const std::vector<std::string>& args) {
 #endif
         if (auto& ipc = IPC::Instance()) {
             ipc.WaitForStart();
+        }
+
+        // Load libSceLibcInternal, run malloc_init.
+        if (has_libcinternal) {
+            LoadLibcInternal();
+
+            if (malloc_init && sceLibcInternalMemoryMutexEnable) {
+                // Call _malloc_init
+                s32 ret = malloc_init();
+                ASSERT_MSG(ret == 0, "malloc_init failed");
+                sceLibcInternalMemoryMutexEnable();
+            }
         }
 
         // Have libSceSysmodule preload our libraries.
@@ -589,24 +219,39 @@ void Linker::Execute(const std::vector<std::string>& args) {
 
 s32 Linker::LoadModule(const std::filesystem::path& elf_name, bool is_dynamic) {
     std::scoped_lock lk{mutex};
-
-    if (!std::filesystem::exists(elf_name)) {
-        LOG_ERROR(Core_Linker, "Provided file {} does not exist", elf_name.string());
-        return -1;
+    auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
+    const std::string as_guest = elf_name.generic_string();
+    std::unique_ptr<Core::FileSys::IFile> handle;
+    if (!as_guest.empty() && as_guest.front() == '/') {
+        handle = mnt->Open(as_guest, /*writable=*/false);
+    }
+    if (!handle) {
+        if (!std::filesystem::exists(elf_name)) {
+            LOG_ERROR(Core_Linker, "Provided file {} does not exist", elf_name.string());
+            return -1;
+        }
+        auto host = std::make_unique<Core::FileSys::HostFile>(
+            elf_name, Common::FS::FileAccessMode::Read, /*read_only=*/true);
+        if (!host->IsOpen()) {
+            LOG_ERROR(Core_Linker, "Provided file {} could not be opened", elf_name.string());
+            return -1;
+        }
+        handle = std::move(host);
     }
 
-    auto module = std::make_unique<Module>(memory, elf_name, max_tls_index);
-    if (!module->IsValid()) {
-        LOG_ERROR(Core_Linker, "Provided file {} is not valid ELF file", elf_name.string());
-        return -1;
-    }
+    s32 mod_id = m_modules.size();
+    auto module =
+        std::make_unique<Module>(memory, elf_name, std::move(handle), max_tls_index, mod_id);
+    ASSERT_MSG(module->IsValid(),
+               "Provided file {} is not valid ELF file. This usually indicated a corrupted dump.",
+               elf_name.string());
 
     num_static_modules += !is_dynamic;
     m_modules.emplace_back(std::move(module));
 
     Core::Devtools::Widget::ModuleList::AddModule(elf_name.filename().string(), elf_name);
 
-    return m_modules.size() - 1;
+    return mod_id;
 }
 
 s32 Linker::LoadAndStartModule(const std::filesystem::path& path, u64 args, const void* argp,
@@ -726,24 +371,9 @@ void Linker::Relocate(Module* module) {
             default:
                 UNREACHABLE_MSG("Unknown bind type {}", sym_bind);
             }
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-            if (rel_sym_type == Loader::SymbolType::Function && symrec.hle_adapter != nullptr) {
-                if (m_hle_veneers == nullptr) {
-                    m_hle_veneers = std::make_unique<GuestCpu::HleVeneerAllocator>();
-                }
-                const auto veneer = m_hle_veneers->Allocate(*symrec.hle_adapter);
-                if (const auto* failure = std::get_if<GuestCpu::HleVeneerFailure>(&veneer)) {
-                    LOG_ERROR(Core_Linker, "Unable to allocate FEX HLE veneer for {}: {}", symrec.name,
-                              failure->error);
-                } else {
-                    symbol_virtual_addr = std::get<u64>(veneer);
-                }
-            }
-#endif
             rel_is_resolved = (symbol_virtual_addr != 0);
-            const u64 resolved_base = rel_is_resolved ? symbol_virtual_addr : 0;
-            rel_value = resolved_base + addend;
-            rel_name = symrec.name;
+            rel_value = (rel_is_resolved ? symbol_virtual_addr + addend : 0);
+            rel_name = symrec.symbol.name;
             break;
         }
         default:
@@ -752,7 +382,7 @@ void Linker::Relocate(Module* module) {
 
         if (rel_is_resolved) {
             std::memcpy(reinterpret_cast<void*>(rel_virtual_addr), &rel_value, sizeof(rel_value));
-        } else {
+        } else if (rel_sym_type == Loader::SymbolType::Function) {
             LOG_INFO(Core_Linker, "Function not patched! {}", rel_name);
         }
     });
@@ -761,15 +391,22 @@ void Linker::Relocate(Module* module) {
 bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Module* m,
                      Loader::SymbolRecord* return_info) {
     const auto ids = Common::SplitString(name, '#');
-    if (ids.size() != 3) {
+    const LibraryInfo* library;
+    const ModuleInfo* module;
+    if (ids.size() != 3 && sym_type != Loader::SymbolType::NoType) {
         return_info->virtual_address = 0;
-        return_info->name = name;
+        return_info->symbol.name = ids.at(0);
         LOG_ERROR(Core_Linker, "Not Resolved {}", name);
         return false;
+    } else if (ids.size() == 1 && sym_type == Loader::SymbolType::NoType) {
+        LOG_DEBUG(Core_Linker, "NoType export {}", name);
+        library = m->FindLibrary("");
+        module = m->FindModule("");
+    } else {
+        library = m->FindLibrary(ids[1]);
+        module = m->FindModule(ids[2]);
     }
 
-    const LibraryInfo* library = m->FindLibrary(ids[1]);
-    const ModuleInfo* module = m->FindModule(ids[2]);
     ASSERT_MSG(library && module, "Unable to find library and module");
 
     Loader::SymbolResolver sr{};
@@ -780,11 +417,7 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
     sr.type = sym_type;
 
     const auto* record = m_hle_symbols.FindSymbol(sr);
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-    if (record != nullptr && !record->hle_fallback) {
-#else
-    if (record != nullptr) {
-#endif
+    if (record) {
         *return_info = *record;
         Core::Devtools::Widget::ModuleList::AddModule(sr.library);
         return true;
@@ -808,31 +441,25 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
 
     const auto aeronid = AeroLib::FindByNid(sr.name.c_str());
     if (sym_type == Loader::SymbolType::Object) {
-        return_info->name = aeronid ? aeronid->name : "Unknown object";
+        return_info->symbol.nidName = aeronid ? aeronid->name : "Unknown object";
         return_info->virtual_address = 0;
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-    } else if (sym_type == Loader::SymbolType::Function) {
-        return_info->name = aeronid ? aeronid->name : "Unknown function";
-        return_info->virtual_address = 0;
-        if (record != nullptr && record->hle_fallback) {
-            return_info->hle_adapter = record->hle_adapter;
-        } else {
-            return_info->hle_adapter = m_hle_symbols.AddUnsupportedFunction(sr);
-        }
-        LOG_WARNING(Core_Linker, "FEX: unresolved HLE {} is a stub that returns zero",
-                    return_info->name);
-        return false;
-#endif
     } else if (aeronid) {
-        return_info->name = aeronid->name;
+        return_info->symbol.nidName = aeronid->name;
         return_info->virtual_address = AeroLib::GetStub(aeronid->nid);
     } else {
         return_info->virtual_address = AeroLib::GetStub(sr.name.c_str());
-        return_info->name = "Unknown !!!";
+        return_info->symbol.nidName = "Unknown !!!";
     }
     if (library->name != "libc" && library->name != "libSceFios2") {
         LOG_WARNING(Core_Linker, "Linker: Stub resolved {} as {} (lib: {}, mod: {})", sr.name,
-                    return_info->name, library->name, module->name);
+                    return_info->symbol.nidName, library->name, module->name);
+    } else {
+        if (library->name == "libc" && return_info->symbol.nidName == "Need_sceLibc") {
+            Libraries::SysModule::g_need_scelibc = true;
+        }
+        if (library->name == "libSceFios2" && return_info->symbol.nidName == "sceFiosInitialize") {
+            Libraries::SysModule::g_need_scelibc = true;
+        }
     }
     return false;
 }
@@ -862,7 +489,12 @@ void* Linker::TlsGetAddr(u64 module_index, u64 offset) {
     if (!addr) {
         // Module was just loaded by above code. Allocate TLS block for it.
         const u32 init_image_size = module->tls.init_image_size;
-        u8* dest = reinterpret_cast<u8*>(CallAppHeapMalloc(module->tls.image_size));
+        u8* dest{};
+        if (heap_api && heap_api->heap_malloc) {
+            dest = reinterpret_cast<u8*>(heap_api->heap_malloc(module->tls.image_size));
+        } else {
+            dest = reinterpret_cast<u8*>(std::malloc(module->tls.image_size));
+        }
         const u8* src = reinterpret_cast<const u8*>(module->tls.image_virtual_addr);
         std::memcpy(dest, src, init_image_size);
         std::memset(dest + init_image_size, 0, module->tls.image_size - init_image_size);
@@ -870,40 +502,6 @@ void* Linker::TlsGetAddr(u64 module_index, u64 offset) {
         addr = dest;
     }
     return addr + offset;
-}
-
-void* Linker::CallAppHeapMalloc(u64 size) {
-    ASSERT_MSG(heap_api != nullptr && heap_api->heap_malloc != nullptr,
-               "Guest heap malloc callback is unavailable");
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-    const std::array<u64, 1> arguments{size};
-    const auto result =
-        RunGuestFunction(reinterpret_cast<VAddr>(heap_api->heap_malloc), arguments);
-    if (const auto* failure = std::get_if<GuestExecutionFailure>(&result)) {
-        LOG_CRITICAL(Core_Linker, "FEX guest heap malloc failed at stage {}: {}",
-                     static_cast<int>(failure->Stage), failure->Error);
-        std::abort();
-    }
-    return reinterpret_cast<void*>(std::get<u64>(result));
-#else
-    return heap_api->heap_malloc(size);
-#endif
-}
-
-void Linker::CallAppHeapFree(void* pointer) {
-    ASSERT_MSG(heap_api != nullptr && heap_api->heap_free != nullptr,
-               "Guest heap free callback is unavailable");
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-    const std::array<u64, 1> arguments{reinterpret_cast<u64>(pointer)};
-    const auto result = RunGuestFunction(reinterpret_cast<VAddr>(heap_api->heap_free), arguments);
-    if (const auto* failure = std::get_if<GuestExecutionFailure>(&result)) {
-        LOG_CRITICAL(Core_Linker, "FEX guest heap free failed at stage {}: {}",
-                     static_cast<int>(failure->Stage), failure->Error);
-        std::abort();
-    }
-#else
-    heap_api->heap_free(pointer);
-#endif
 }
 
 void* Linker::AllocateTlsForThread(bool is_primary) {
@@ -927,8 +525,8 @@ void* Linker::AllocateTlsForThread(bool is_primary) {
             &addr_out, tls_aligned, 3, 0, "SceKernelPrimaryTcbTls");
         ASSERT_MSG(ret == 0, "Unable to allocate TLS+TCB for the primary thread");
     } else {
-        if (heap_api) {
-            addr_out = CallAppHeapMalloc(total_tls_size);
+        if (heap_api && heap_api->heap_malloc) {
+            addr_out = heap_api->heap_malloc(total_tls_size);
         } else {
             addr_out = std::malloc(total_tls_size);
         }
@@ -937,8 +535,8 @@ void* Linker::AllocateTlsForThread(bool is_primary) {
 }
 
 void Linker::FreeTlsForNonPrimaryThread(void* pointer) {
-    if (heap_api) {
-        CallAppHeapFree(pointer);
+    if (heap_api && heap_api->heap_free) {
+        heap_api->heap_free(pointer);
     } else {
         std::free(pointer);
     }

@@ -1,12 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
-#include <bit>
-#include <cstdlib>
-#ifdef ENABLE_BACHATA_RUNTIME
-#include <unistd.h>
-#endif
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -19,9 +13,8 @@
 #endif
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
-#include "video_core/renderer_vulkan/legacy_vertex_attributes.h"
+#include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
-#include "video_core/renderer_vulkan/vk_foveation.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
@@ -106,8 +99,8 @@ Instance::Instance(bool enable_validation, bool enable_crash_diagnostic)
 
 Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
                    bool enable_validation /*= false*/, bool enable_crash_diagnostic /*= false*/)
-    : instance{CreateInstance(window.GetWindowInfo().type, enable_validation,
-                              enable_crash_diagnostic)},
+    : instance{
+          CreateInstance(window.GetWindowInfo().type, enable_validation, enable_crash_diagnostic)},
       physical_devices{EnumeratePhysicalDevices(instance)} {
     if (enable_validation) {
         debug_callback = CreateDebugCallback(*instance);
@@ -116,7 +109,7 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
     ASSERT_MSG(num_physical_devices > 0, "No physical devices found");
     LOG_INFO(Render_Vulkan, "Found {} physical devices", num_physical_devices);
 
-#ifdef ENABLE_OPENXR_HOST
+    #ifdef ENABLE_OPENXR_HOST
     // A headset of the machine's own is driven from one graphics card, and takes pictures from
     // nowhere else.
     if (const vk::PhysicalDevice headset_device =
@@ -160,6 +153,14 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
                 return left_is_discrete;
             }
 
+            // Software renderers advertise system memory as device local, so they
+            // would win the memory comparison below against real hardware.
+            const bool left_is_cpu = left_prop.deviceType == vk::PhysicalDeviceType::eCpu;
+            const bool right_is_cpu = right_prop.deviceType == vk::PhysicalDeviceType::eCpu;
+            if (left_is_cpu != right_is_cpu) {
+                return right_is_cpu;
+            }
+
             constexpr auto get_mem = [](const vk::PhysicalDeviceMemoryProperties& mem) -> size_t {
                 size_t max = 0;
                 for (u32 i = 0; i < mem.memoryHeapCount; i++) {
@@ -186,27 +187,26 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
     available_extensions = GetSupportedExtensions(physical_device);
     format_properties = GetFormatProperties(physical_device);
     properties = physical_device.getProperties();
-    // Multisampling is what costs a mobile GPU the most; this trades edge quality for speed.
-    if (const char* max_msaa = std::getenv("SHADPS4_MAX_MSAA")) {
-        const u32 max_samples = std::clamp(static_cast<u32>(std::atoi(max_msaa)), 1u, 64u);
-        sample_count_cap = vk::SampleCountFlags{std::bit_floor(max_samples) * 2 - 1};
-        LOG_INFO(Render_Vulkan, "Multisampling limited to {} samples", std::bit_floor(max_samples));
-    }
     memory_properties = physical_device.getMemoryProperties();
     CollectDeviceParameters();
+    if (properties.apiVersion >= VK_API_VERSION_1_2 &&
+        properties.apiVersion < TargetVulkanApiVersion && VideoCore::IsRenderDocLoaded()) {
+        // RenderDoc reports Vulkan 1.2 on drivers without bufferDeviceAddressCaptureReplay, but
+        // still forwards the device setup to the driver, so Vulkan 1.3 features keep working.
+        LOG_WARNING(Render_Vulkan, "RenderDoc limited this device to Vulkan {}.{}",
+                    VK_VERSION_MAJOR(properties.apiVersion),
+                    VK_VERSION_MINOR(properties.apiVersion));
+        properties.apiVersion = TargetVulkanApiVersion;
+    }
     ASSERT_MSG(properties.apiVersion >= TargetVulkanApiVersion,
                "Vulkan {}.{} is required, but only {}.{} is supported by device!",
                VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
                VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
 
     CreateDevice();
-    std::fprintf(stderr, "BACHATA_INSTANCE_DEVICE_READY\n");
     CollectPhysicalMemoryInfo();
-    std::fprintf(stderr, "BACHATA_INSTANCE_MEMORY_READY\n");
     CollectImageFormatInfo();
-    std::fprintf(stderr, "BACHATA_INSTANCE_FORMATS_READY\n");
     CollectToolingInfo();
-    std::fprintf(stderr, "BACHATA_INSTANCE_READY\n");
 }
 
 Instance::~Instance() {
@@ -234,22 +234,16 @@ std::string Instance::GetDriverVersionName() {
 }
 
 bool Instance::CreateDevice() {
-    const vk::StructureChain feature_chain =
-        physical_device
-            .getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
-                          vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
-                          vk::PhysicalDeviceRobustness2FeaturesEXT,
-                          vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
-                          vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
-                          vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT,
-                          vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR,
-                          vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT>();
+    const vk::StructureChain feature_chain = physical_device.getFeatures2<
+        vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
+        vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
+        vk::PhysicalDeviceRobustness2FeaturesEXT,
+        vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
+        vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
+        vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT,
+        vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR,
+        vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT, vk::PhysicalDeviceShaderClockFeaturesKHR>();
     features = feature_chain.get().features;
-    LOG_INFO(Render_Vulkan, "GPU_ClipCull: clip={} cull={} combined={} featClip={} featCull={}",
-             properties.limits.maxClipDistances, properties.limits.maxCullDistances,
-             properties.limits.maxCombinedClipAndCullDistances,
-             static_cast<bool>(features.shaderClipDistance),
-             static_cast<bool>(features.shaderCullDistance));
 
     const vk::StructureChain properties_chain = physical_device.getProperties2<
         vk::PhysicalDeviceProperties2, vk::PhysicalDeviceVulkan11Properties,
@@ -266,13 +260,7 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-#ifdef ENABLE_OPENXR_HOST
-    // What the runtime of the machine's own headset wants of a device it is handed pictures
-    // by. (The names have to outlive the making of the device.)
-    const std::vector<std::string> headset_extensions =
-        Core::Vr::OpenXrHost::Instance().VulkanDeviceExtensions();
-#endif
-    boost::container::static_vector<const char*, 96> enabled_extensions;
+    boost::container::static_vector<const char*, 64> enabled_extensions;
     const auto add_extension = [&](std::string_view extension) -> bool {
         const auto result =
             std::find_if(available_extensions.begin(), available_extensions.end(),
@@ -288,19 +276,38 @@ bool Instance::CreateDevice() {
         return false;
     };
 
-    // Required
+#ifdef ENABLE_OPENXR_HOST
+    const std::vector<std::string> headset_extensions =
+        Core::Vr::OpenXrHost::Instance().VulkanDeviceExtensions();
+    for (const std::string& name : headset_extensions) {
+        if (std::ranges::none_of(enabled_extensions,
+                                 [&](const char* enabled) { return name == enabled; })) {
+            add_extension(name);
+        }
+    }
+#endif
+        // Required
     ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    // VK_KHR_push_descriptor is optional on Mali/Immortalis drivers. When unavailable,
-    // push_descriptor_props stays zero-initialized (MaxPushDescriptors()==0) and all
-    // descriptor-set layouts fall back to the non-push path with a DescriptorHeap.
-    push_descriptor = add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-    // VK_EXT_vertex_attribute_divisor is also optional. When unavailable, instanced
-    // (step-rate) vertex fetch silently degrades to per-vertex (divisor=1). Per-vertex
-    // attributes are unaffected. Mali/Immortalis drivers do not expose this extension.
-    vertex_attribute_divisor = add_extension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+    ASSERT_MSG(add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME),
+               "Required Vulkan extension unavailable: {}", VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    ASSERT_MSG(add_extension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME),
+               "Required Vulkan extension unavailable: {}",
+               VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+    ASSERT_MSG(add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME),
+               "Required Vulkan extension unavailable: {}", VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+
+    const auto robustness2_features = feature_chain.get<vk::PhysicalDeviceRobustness2FeaturesEXT>();
+    ASSERT_MSG(robustness2_features.robustBufferAccess2,
+               "Required Vulkan feature unavailable: robustBufferAccess2");
+    ASSERT_MSG(robustness2_features.robustImageAccess2,
+               "Required Vulkan feature unavailable: robustImageAccess2");
+    ASSERT_MSG(robustness2_features.nullDescriptor,
+               "Required Vulkan feature unavailable: nullDescriptor");
 
     // Optional
+    maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+    maintenance_6 = add_extension(VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
     maintenance_8 = add_extension(VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
     attachment_feedback_loop = add_extension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
     if (attachment_feedback_loop) {
@@ -319,20 +326,14 @@ bool Instance::CreateDevice() {
         LOG_INFO(Render_Vulkan, "- extendedDynamicState3ColorWriteMask: {}",
                  dynamic_state_3_features.extendedDynamicState3ColorWriteMask);
     }
-    robustness2 = add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
-    if (robustness2) {
-        robustness2_features = feature_chain.get<vk::PhysicalDeviceRobustness2FeaturesEXT>();
-        LOG_INFO(Render_Vulkan, "- robustBufferAccess2: {}",
-                 robustness2_features.robustBufferAccess2);
-        LOG_INFO(Render_Vulkan, "- robustImageAccess2: {}",
-                 robustness2_features.robustImageAccess2);
-        LOG_INFO(Render_Vulkan, "- nullDescriptor: {}", robustness2_features.nullDescriptor);
-    }
     custom_border_color = add_extension(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     depth_clip_control = add_extension(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
     depth_clip_enable = add_extension(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
     vertex_input_dynamic_state = add_extension(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
-    list_restart = add_extension(VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
+    // Games excessively leave restart enabled with lists when it isn't actually needed, and it
+    // slows down KosmicKrisp due to unrolling. Revisit if KosmicKrisp moves this to mesh shaders.
+    list_restart = driver_id != vk::DriverId::eMesaKosmickrisp &&
+                   add_extension(VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
     if (list_restart) {
         list_restart_features =
             feature_chain.get<vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT>();
@@ -347,28 +348,13 @@ bool Instance::CreateDevice() {
         fragment_shader_barycentric =
             add_extension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
     }
-    if (ShouldDisableLegacyVertexAttributes(properties.deviceName)) {
-        LOG_WARNING(Render_Vulkan,
-                    "Disabling VK_EXT_legacy_vertex_attributes on {} so integer "
-                    "vertex attributes use shader NumberClass conversion",
-                    GetModelName());
-        legacy_vertex_attributes = false;
-    } else {
-        legacy_vertex_attributes = add_extension(VK_EXT_LEGACY_VERTEX_ATTRIBUTES_EXTENSION_NAME);
-    }
     provoking_vertex = add_extension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
     shader_stencil_export = add_extension(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
     image_load_store_lod = add_extension(VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME);
     amd_gcn_shader = add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);
     amd_shader_trinary_minmax = add_extension(VK_AMD_SHADER_TRINARY_MINMAX_EXTENSION_NAME);
-    // Mobile GPUs have neither extension. SHADPS4_NO_MIXED_SAMPLES forces the same fallback on
-    // a desktop GPU so that path can be exercised without the device.
-    if (std::getenv("SHADPS4_NO_MIXED_SAMPLES") == nullptr) {
-        nv_framebuffer_mixed_samples =
-            add_extension(VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
-        amd_mixed_attachment_samples =
-            add_extension(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
-    }
+    nv_framebuffer_mixed_samples = add_extension(VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+    amd_mixed_attachment_samples = add_extension(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
     shader_atomic_float = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
     shader_atomic_float2 = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME);
     if (shader_atomic_float2) {
@@ -402,64 +388,14 @@ bool Instance::CreateDevice() {
         LOG_INFO(Render_Vulkan, "- sampler2DViewOf3D: {}",
                  image_2d_view_of_3d_features.sampler2DViewOf3D);
     }
-    // Coarser shading towards the edges of a headset's pictures, where asked for (Foveation):
-    // a map of how coarsely to shade each part, given to the render passes that draw them.
-    if (Foveation::Level() > 0 && add_extension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME)) {
-        const auto rate_features =
-            physical_device
-                .getFeatures2<vk::PhysicalDeviceFeatures2,
-                              vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>()
-                .get<vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>();
-        const auto rate_properties =
-            physical_device
-                .getProperties2<vk::PhysicalDeviceProperties2,
-                                vk::PhysicalDeviceFragmentShadingRatePropertiesKHR>()
-                .get<vk::PhysicalDeviceFragmentShadingRatePropertiesKHR>();
-        const auto smallest = rate_properties.minFragmentShadingRateAttachmentTexelSize;
-        const auto largest = rate_properties.maxFragmentShadingRateAttachmentTexelSize;
-        const u32 texel_low = std::max(smallest.width, smallest.height);
-        const u32 texel_high = std::min(largest.width, largest.height);
-        foveation = rate_features.attachmentFragmentShadingRate &&
-                    rate_features.pipelineFragmentShadingRate && texel_low != 0 &&
-                    texel_low <= texel_high;
-        if (foveation) {
-            foveation_texel = std::clamp(Foveation::WantedTexel, texel_low, texel_high);
-            // 1x1, 1x2, 2x1 and 2x2 come with the feature; what else, the GPU says.
-            foveation_rates = {{1, 1}, {1, 2}, {2, 1}, {2, 2}};
-            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFragmentShadingRatesKHR) {
-                const auto [rates_result, rates] = physical_device.getFragmentShadingRatesKHR();
-                if (rates_result == vk::Result::eSuccess) {
-                    foveation_rates.clear();
-                    for (const auto& rate : rates) {
-                        if (rate.sampleCounts & vk::SampleCountFlagBits::e1) {
-                            foveation_rates.push_back(rate.fragmentSize);
-                        }
-                    }
-                }
-            }
-            LOG_INFO(Render_Vulkan, "Foveation possible: shading rate maps of {}x{} pixels a texel",
-                     foveation_texel, foveation_texel);
-        } else {
-            LOG_WARNING(Render_Vulkan,
-                        "Foveation not possible: shading rates by attachment {}, by pipeline {}, "
-                        "map texels {}x{} to {}x{}",
-                        static_cast<bool>(rate_features.attachmentFragmentShadingRate),
-                        static_cast<bool>(rate_features.pipelineFragmentShadingRate),
-                        smallest.width, smallest.height, largest.width, largest.height);
-            enabled_extensions.pop_back();
-        }
-    }
+    image_view_min_lod = add_extension(VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
     supports_memory_budget = add_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
-    external_memory_dma_buf = add_extension(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
-                              add_extension(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
-#ifdef ENABLE_OPENXR_HOST
-    for (const std::string& name : headset_extensions) {
-        if (std::ranges::none_of(enabled_extensions,
-                                 [&](const char* enabled) { return name == enabled; })) {
-            add_extension(name);
-        }
+    shader_clock = add_extension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
+    if (shader_clock) {
+        shader_clock_features = feature_chain.get<vk::PhysicalDeviceShaderClockFeaturesKHR>();
+        LOG_INFO(Render_Vulkan, "- shaderSubgroupClock: {}",
+                 shader_clock_features.shaderSubgroupClock);
     }
-#endif
     const bool calibrated_timestamps =
         TRACY_GPU_ENABLED ? add_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) : false;
 
@@ -484,8 +420,6 @@ bool Instance::CreateDevice() {
     }
 
 #ifdef ENABLE_OPENXR_HOST
-    // A second queue of the same family, where there is one, for a headset's runtime (see
-    // GetXrQueue).
     static constexpr std::array queue_priorities = {1.0f, 1.0f};
 #else
     static constexpr std::array queue_priorities = {1.0f};
@@ -501,6 +435,10 @@ bool Instance::CreateDevice() {
     const auto vk11_features = feature_chain.get<vk::PhysicalDeviceVulkan11Features>();
     vk12_features = feature_chain.get<vk::PhysicalDeviceVulkan12Features>();
     vk13_features = feature_chain.get<vk::PhysicalDeviceVulkan13Features>();
+    if (!vk12_features.bufferDeviceAddress) {
+        LOG_WARNING(Render_Vulkan,
+                    "bufferDeviceAddress is unavailable, direct memory access cannot be used");
+    }
     vk::StructureChain device_chain = {
         vk::DeviceCreateInfo{
             .queueCreateInfoCount = 1u,
@@ -532,22 +470,21 @@ bool Instance::CreateDevice() {
                 .shaderStorageImageExtendedFormats = features.shaderStorageImageExtendedFormats,
                 .shaderStorageImageMultisample = features.shaderStorageImageMultisample,
                 .shaderClipDistance = features.shaderClipDistance,
-                .shaderCullDistance = features.shaderCullDistance,
                 .shaderFloat64 = features.shaderFloat64,
                 .shaderInt64 = features.shaderInt64,
                 .shaderInt16 = features.shaderInt16,
+                .sparseBinding = features.sparseBinding,
+                .sparseResidencyBuffer = features.sparseResidencyBuffer,
             },
         },
         vk::PhysicalDeviceVulkan11Features{
             .storageBuffer16BitAccess = vk11_features.storageBuffer16BitAccess,
-            .uniformAndStorageBuffer16BitAccess = vk11_features.uniformAndStorageBuffer16BitAccess,
             .shaderDrawParameters = vk11_features.shaderDrawParameters,
         },
         vk::PhysicalDeviceVulkan12Features{
             .samplerMirrorClampToEdge = vk12_features.samplerMirrorClampToEdge,
             .drawIndirectCount = vk12_features.drawIndirectCount,
             .storageBuffer8BitAccess = vk12_features.storageBuffer8BitAccess,
-            .uniformAndStorageBuffer8BitAccess = vk12_features.uniformAndStorageBuffer8BitAccess,
             .shaderBufferInt64Atomics = vk12_features.shaderBufferInt64Atomics,
             .shaderSharedInt64Atomics = vk12_features.shaderSharedInt64Atomics,
             .shaderFloat16 = vk12_features.shaderFloat16,
@@ -584,9 +521,9 @@ bool Instance::CreateDevice() {
             .depthClipEnable = true,
         },
         vk::PhysicalDeviceRobustness2FeaturesEXT{
-            .robustBufferAccess2 = robustness2_features.robustBufferAccess2,
-            .robustImageAccess2 = robustness2_features.robustImageAccess2,
-            .nullDescriptor = robustness2_features.nullDescriptor,
+            .robustBufferAccess2 = true,
+            .robustImageAccess2 = true,
+            .nullDescriptor = true,
         },
         vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT{
             .vertexInputDynamicState = true,
@@ -599,14 +536,17 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR{
             .fragmentShaderBarycentric = true,
         },
-        vk::PhysicalDeviceLegacyVertexAttributesFeaturesEXT{
-            .legacyVertexAttributes = true,
-        },
         vk::PhysicalDeviceProvokingVertexFeaturesEXT{
             .provokingVertexLast = true,
         },
         vk::PhysicalDeviceVertexAttributeDivisorFeatures{
             .vertexAttributeInstanceRateDivisor = true,
+        },
+        vk::PhysicalDeviceMaintenance5FeaturesKHR{
+            .maintenance5 = true,
+        },
+        vk::PhysicalDeviceMaintenance6FeaturesKHR{
+            .maintenance6 = true,
         },
         vk::PhysicalDeviceMaintenance8FeaturesKHR{
             .maintenance8 = true,
@@ -636,10 +576,11 @@ bool Instance::CreateDevice() {
             .image2DViewOf3D = image_2d_view_of_3d_features.image2DViewOf3D,
             .sampler2DViewOf3D = image_2d_view_of_3d_features.sampler2DViewOf3D,
         },
-        vk::PhysicalDeviceFragmentShadingRateFeaturesKHR{
-            .pipelineFragmentShadingRate = true,
-            .primitiveFragmentShadingRate = false,
-            .attachmentFragmentShadingRate = true,
+        vk::PhysicalDeviceImageViewMinLodFeaturesEXT{
+            .minLod = true,
+        },
+        vk::PhysicalDeviceShaderClockFeaturesKHR{
+            .shaderSubgroupClock = shader_clock_features.shaderSubgroupClock,
         },
     };
 
@@ -655,9 +596,6 @@ bool Instance::CreateDevice() {
     if (!depth_clip_enable) {
         device_chain.unlink<vk::PhysicalDeviceDepthClipEnableFeaturesEXT>();
     }
-    if (!robustness2) {
-        device_chain.unlink<vk::PhysicalDeviceRobustness2FeaturesEXT>();
-    }
     if (!vertex_input_dynamic_state) {
         device_chain.unlink<vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT>();
     }
@@ -667,14 +605,14 @@ bool Instance::CreateDevice() {
     if (!fragment_shader_barycentric) {
         device_chain.unlink<vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR>();
     }
-    if (!legacy_vertex_attributes) {
-        device_chain.unlink<vk::PhysicalDeviceLegacyVertexAttributesFeaturesEXT>();
-    }
     if (!provoking_vertex) {
         device_chain.unlink<vk::PhysicalDeviceProvokingVertexFeaturesEXT>();
     }
-    if (!vertex_attribute_divisor) {
-        device_chain.unlink<vk::PhysicalDeviceVertexAttributeDivisorFeatures>();
+    if (!maintenance_5) {
+        device_chain.unlink<vk::PhysicalDeviceMaintenance5FeaturesKHR>();
+    }
+    if (!maintenance_6) {
+        device_chain.unlink<vk::PhysicalDeviceMaintenance6FeaturesKHR>();
     }
     if (!maintenance_8) {
         device_chain.unlink<vk::PhysicalDeviceMaintenance8FeaturesKHR>();
@@ -692,8 +630,11 @@ bool Instance::CreateDevice() {
     if (!image_2d_view_of_3d) {
         device_chain.unlink<vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT>();
     }
-    if (!foveation) {
-        device_chain.unlink<vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>();
+    if (!image_view_min_lod) {
+        device_chain.unlink<vk::PhysicalDeviceImageViewMinLodFeaturesEXT>();
+    }
+    if (!shader_clock) {
+        device_chain.unlink<vk::PhysicalDeviceShaderClockFeaturesKHR>();
     }
 
     auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
@@ -704,67 +645,6 @@ bool Instance::CreateDevice() {
     device = std::move(dev);
 
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
-
-
-    // ── Vulkan 1.3 dispatch audit ─────────────────────────────────────────────
-    // Run immediately after init(*device) so failures surface at startup, not at
-    // the first draw call.  If any mandatory slot is null the renderer cannot
-    // proceed; log every slot so the complete state is captured in one message.
-#ifndef NDEBUG
-    {
-        struct SlotCheck {
-            const char* name;
-            const void* slot;  // address stored in the dispatcher
-            bool required;
-        };
-        auto gdpa = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
-        VkDevice raw_device = static_cast<VkDevice>(*device);
-
-        // Probe each function via GDPA so we can compare direct vs. Vulkan-Hpp slot.
-#define PROBE(fn)                                                            \
-        {                                                                    \
-            #fn,                                                             \
-            reinterpret_cast<const void*>(VULKAN_HPP_DEFAULT_DISPATCHER.fn),\
-            true                                                             \
-        }
-        const SlotCheck checks[] = {
-            PROBE(vkCmdBindVertexBuffers2),
-            PROBE(vkCmdPipelineBarrier2),
-            PROBE(vkQueueSubmit2),
-            PROBE(vkCmdBeginRendering),
-            PROBE(vkCmdEndRendering),
-            PROBE(vkCmdCopyBuffer2),
-            PROBE(vkCmdCopyImage2),
-            PROBE(vkCmdCopyBufferToImage2),
-            PROBE(vkCmdCopyImageToBuffer2),
-            PROBE(vkCmdBlitImage2),
-            PROBE(vkCmdResolveImage2),
-            PROBE(vkGetBufferDeviceAddress),
-        };
-#undef PROBE
-
-        bool any_null = false;
-        LOG_INFO(Render_Vulkan,
-                 "VK-HPP dispatch audit: dispatcher={} device={}",
-                 fmt::ptr(&VULKAN_HPP_DEFAULT_DISPATCHER),
-                 fmt::ptr(raw_device));
-        for (const auto& c : checks) {
-            auto direct = gdpa ? gdpa(raw_device, c.name) : nullptr;
-            LOG_INFO(Render_Vulkan,
-                     "  {:40s} hpp={} direct={}{}",
-                     c.name,
-                     fmt::ptr(c.slot),
-                     fmt::ptr(direct),
-                     (c.required && !c.slot) ? " <-- NULL MANDATORY SLOT" : "");
-            if (c.required && !c.slot)
-                any_null = true;
-        }
-        ASSERT_MSG(!any_null,
-                   "One or more mandatory Vulkan 1.3 dispatcher slots are null "
-                   "immediately after init(*device). Renderer cannot start.");
-    }
-#endif
-
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);
@@ -813,14 +693,10 @@ void Instance::CreateAllocator() {
     };
 
     const VmaAllocatorCreateInfo allocator_info = {
-        .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+        .flags = IsBufferDeviceAddressSupported() ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
+                                                  : VmaAllocatorCreateFlags{},
         .physicalDevice = physical_device,
         .device = *device,
-#ifdef ENABLE_BACHATA_RUNTIME
-        // The default block is a quarter of a gigabyte, which the kernel drivers of phones and
-        // headsets back with real pages whether anything has been placed in it or not.
-        .preferredLargeHeapBlockSize = 32ULL << 20,
-#endif
         .pVulkanFunctions = &functions,
         .instance = *instance,
         .vulkanApiVersion = TargetVulkanApiVersion,
@@ -892,23 +768,13 @@ void Instance::CollectPhysicalMemoryInfo() {
         // We reserve some memory for the system.
         const u64 system_memory = std::min<u64>(total_memory_budget / 8, 1_GB);
         total_memory_budget -= system_memory;
-        return;
-    }
-    // Leave at least 8 GB for the system on integrated GPUs.
-    const s64 available_memory = static_cast<s64>(total_memory_budget - device_initial_usage);
-    total_memory_budget =
-        static_cast<u64>(std::max<s64>(available_memory - 8_GB, static_cast<s64>(local_memory)));
-#ifdef ENABLE_BACHATA_RUNTIME
-    // A phone or headset: the "heap" the driver reports is most of the system's memory, which
-    // the guest's own memory, the system and everything else running have to fit into as well.
-    // A quarter of what the machine has is what the GPU caches may plan with.
-    const s64 pages = sysconf(_SC_PHYS_PAGES);
-    const s64 page_size = sysconf(_SC_PAGESIZE);
-    if (pages > 0 && page_size > 0) {
+    } else {
+        // Leave at least 8 GB for the system on integrated GPUs.
+        const s64 available_memory = static_cast<s64>(total_memory_budget - device_initial_usage);
         total_memory_budget =
-            std::min<u64>(total_memory_budget, static_cast<u64>(pages) * page_size / 4);
+            static_cast<u64>(std::max<s64>(available_memory - 8_GB, static_cast<s64>(2_GB)));
     }
-#endif
+    LOG_INFO(Render_Vulkan, "GPU memory budget is {} MiB", total_memory_budget / 1_MB);
 }
 
 void Instance::CollectImageFormatInfo() {
@@ -925,12 +791,6 @@ void Instance::CollectImageFormatInfo() {
     supports_block_texel_view = block_texel_view_props.result == vk::Result::eSuccess;
     LOG_INFO(Render_Vulkan, "Block Texel View support: {}",
              supports_block_texel_view ? "Yes" : "No");
-
-#ifdef ENABLE_BACHATA_RUNTIME
-    // Remaining checks only produce diagnostics. Some Turnip format-property paths block when
-    // reached through Box64, while format support is already cached for renderer decisions.
-    return;
-#endif
 
     // Check and log format support details.
     for (const auto& format : LiverpoolToVK::SurfaceFormats()) {
@@ -956,11 +816,6 @@ void Instance::CollectImageFormatInfo() {
 }
 
 void Instance::CollectToolingInfo() const {
-#ifdef ENABLE_BACHATA_RUNTIME
-    // Turnip's tool-properties query can block indefinitely through Box64. Tool metadata is
-    // diagnostic-only and is not required for device creation or rendering.
-    return;
-#endif
     if (driver_id == vk::DriverId::eAmdProprietary ||
         driver_id == vk::DriverId::eIntelProprietaryWindows) {
         // AMD: Causes issues with Reshade.
@@ -979,7 +834,7 @@ void Instance::CollectToolingInfo() const {
     }
 }
 
-u64 Instance::GetDeviceMemoryUsage(u64* budget) const {
+u64 Instance::GetDeviceMemoryUsage() const {
     vk::PhysicalDeviceMemoryBudgetPropertiesEXT memory_budget_props{};
     vk::PhysicalDeviceMemoryProperties2 props = {
         .pNext = &memory_budget_props,
@@ -987,13 +842,8 @@ u64 Instance::GetDeviceMemoryUsage(u64* budget) const {
     physical_device.getMemoryProperties2(&props);
 
     u64 total_usage = 0;
-    u64 total_budget = 0;
     for (const size_t heap : valid_heaps) {
         total_usage += memory_budget_props.heapUsage[heap];
-        total_budget += memory_budget_props.heapBudget[heap];
-    }
-    if (budget != nullptr) {
-        *budget = total_budget;
     }
     return total_usage;
 }
@@ -1030,6 +880,11 @@ vk::Format Instance::GetSupportedFormat(const vk::Format format,
         case vk::Format::eR8Srgb:
             if (IsFormatSupported(vk::Format::eR8Unorm, flags)) {
                 return vk::Format::eR8Unorm;
+            }
+            break;
+        case vk::Format::eR8G8Srgb:
+            if (IsFormatSupported(vk::Format::eR8G8Unorm, flags)) {
+                return vk::Format::eR8G8Unorm;
             }
             break;
         default:

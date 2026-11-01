@@ -5,9 +5,6 @@
 #include "core/libraries/kernel/posix_error.h"
 #include "core/libraries/kernel/threads/pthread.h"
 #include "core/libraries/libs.h"
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-#include "core/guest_cpu/guest_callback.h"
-#endif
 
 namespace Libraries::Kernel {
 
@@ -88,12 +85,7 @@ void _thread_cleanupspecific() {
                  * destructor:
                  */
                 lk.unlock();
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-                Core::GuestCpu::RunGuestFunctionOrAbort(
-                    reinterpret_cast<void*>(destructor), "pthread key destructor", data);
-#else
                 destructor(data);
-#endif
                 lk.lock();
             }
         }

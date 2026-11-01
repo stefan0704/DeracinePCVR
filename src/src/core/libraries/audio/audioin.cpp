@@ -1,19 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cmath>
-#include <cstdlib>
 #include <shared_mutex>
+#include <fmt/format.h>
 #include "audioin_backend.h"
 #include "audioin_error.h"
 #include "common/logging/log.h"
 #include "core/libraries/audio/audioin.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
-#include "input/scripted_input.h"
 
 namespace Libraries::AudioIn {
 
@@ -48,7 +43,7 @@ static s32 GetPortType(s32 handle) {
 
 static int AllocatePort(OrbisAudioInType type) {
     // TODO implement port type ranges if needed
-    for (int i = 0; i < ORBIS_AUDIO_IN_NUM_PORTS; i++) {
+    for (int i = 0; i <= ORBIS_AUDIO_IN_NUM_PORTS; i++) {
         std::shared_lock read_lock{port_table_mutex};
         if (!port_table[i]) {
             return i;
@@ -56,165 +51,6 @@ static int AllocatePort(OrbisAudioInType type) {
     }
     return -1;
 }
-
-/// SHADPS4_AUDIOIN_STATS=1: every ten seconds, how much the title read from each port and how
-/// loud that was.
-static bool StatsEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("SHADPS4_AUDIOIN_STATS");
-        return value != nullptr && value[0] != 0 && value[0] != '0';
-    }();
-    return enabled;
-}
-
-struct InputStats {
-    std::chrono::steady_clock::time_point since{};
-    u64 frames{};
-    u64 samples{};
-    double squares{};
-    double loudest{};
-    std::atomic<u32> status_calls{};
-};
-static std::array<InputStats, ORBIS_AUDIO_IN_NUM_PORTS> input_stats;
-
-static double Decibels(double level) {
-    return level > 0.0 ? 20.0 * std::log10(level) : -120.0;
-}
-
-/// Replaces what the port heard by noise of the loudness an input script asks for, which is
-/// how a test run blows into the microphone.
-static void ApplyScriptedLevel(const PortIn& port, s16* samples, int frames) {
-    const float level = Input::ScriptedMicrophoneLevel();
-    if (level <= 0.0f) {
-        return;
-    }
-    // Evenly distributed noise between -a and a has a root mean square of a / sqrt(3).
-    const float amplitude = std::min(level * 1.7320508f, 1.0f) * 32767.0f;
-    static u32 state = 0x2545f491;
-    const u32 count = static_cast<u32>(frames) * port.channels_num;
-    for (u32 i = 0; i < count; ++i) {
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
-        const float unit = static_cast<float>(state >> 8) / 8388608.0f - 1.0f;
-        samples[i] = static_cast<s16>(unit * amplitude);
-    }
-}
-
-/// SHADPS4_MIC_GAIN=<0.1..30>: what the microphone gives, that many times louder. A title
-/// that takes loudness for blowing takes none for it from a microphone that is too quiet.
-static void ApplyGain(const PortIn& port, s16* samples, int frames) {
-    static const float gain = [] {
-        const char* value = std::getenv("SHADPS4_MIC_GAIN");
-        const float wanted = value != nullptr ? static_cast<float>(std::atof(value)) : 1.0f;
-        return wanted > 0.0f ? std::clamp(wanted, 0.1f, 30.0f) : 1.0f;
-    }();
-    if (gain == 1.0f) {
-        return;
-    }
-    const u32 count = static_cast<u32>(frames) * port.channels_num;
-    for (u32 i = 0; i < count; ++i) {
-        samples[i] = static_cast<s16>(std::clamp(samples[i] * gain, -32768.0f, 32767.0f));
-    }
-}
-
-/// Says now and then how loud what a title was given is, when that is worth knowing: the first
-/// time, whenever something loud was heard, and once when there has been nothing but silence,
-/// which is what a microphone that may not be used gives (and one whose owner keeps quiet, if
-/// it cuts out what is not speech). (The loudness is all ASTRO BOT goes by: it
-/// takes -21 dB for blowing at half strength, -9 dB for blowing as hard as can be.)
-static void NoteLoudness(const PortIn& port, const s16* samples, int frames) {
-    using Clock = std::chrono::steady_clock;
-    static std::mutex mutex;
-    const std::scoped_lock lock{mutex};
-    static Clock::time_point since{};
-    static Clock::time_point started{};
-    static double loudest = 0.0;
-    static bool any_sound = false;
-    static bool first = true;
-    static bool silence_said = false;
-    const u32 count = static_cast<u32>(frames) * port.channels_num;
-    if (count == 0) {
-        return;
-    }
-    double squares = 0.0;
-    for (u32 i = 0; i < count; ++i) {
-        const double sample = samples[i] / 32768.0;
-        squares += sample * sample;
-        any_sound = any_sound || samples[i] != 0;
-    }
-    loudest = std::max(loudest, std::sqrt(squares / count));
-    const auto now = Clock::now();
-    if (since == Clock::time_point{}) {
-        since = now;
-        started = now;
-    }
-    if (now - since < std::chrono::seconds{10}) {
-        return;
-    }
-    // (Not for a microphone that has given nothing at all: that is what the line below is for.)
-    if ((first && any_sound) || Decibels(loudest) > -30.0) {
-        LOG_INFO(Lib_AudioIn,
-                 "Microphone: the loudest of the last 10 seconds was {:.0f} dB (the game takes "
-                 "-21 dB for blowing at half strength, -9 dB for blowing as hard as can be)",
-                 Decibels(loudest));
-        first = false;
-    }
-    if (!any_sound && !silence_said && now - started > std::chrono::seconds{30}) {
-        silence_said = true;
-#ifdef _WIN32
-        LOG_INFO(Lib_AudioIn,
-                 "Microphone: nothing but silence has come from it so far. If blowing does "
-                 "nothing in the game: is it the microphone Windows records from, may desktop "
-                 "apps use the microphone (Windows settings, Privacy & security, Microphone), "
-                 "and may the headset's streaming app use the headset's? The PS button and "
-                 "square held together blow without one (X and Y on a headset's controllers)");
-#else
-        LOG_INFO(Lib_AudioIn, "Microphone: nothing but silence has come from it so far");
-#endif
-    }
-    since = now;
-    loudest = 0.0;
-}
-
-static void NoteInput(int port_id, const PortIn& port, const s16* samples, int frames) {
-    using Clock = std::chrono::steady_clock;
-    InputStats& stats = input_stats[port_id];
-    const u32 count = static_cast<u32>(frames) * port.channels_num;
-    double squares = 0.0;
-    for (u32 i = 0; i < count; ++i) {
-        const double sample = samples[i] / 32768.0;
-        squares += sample * sample;
-    }
-    stats.frames += static_cast<u64>(frames);
-    stats.samples += count;
-    stats.squares += squares;
-    if (count != 0) {
-        stats.loudest = std::max(stats.loudest, std::sqrt(squares / count));
-    }
-
-    const auto now = Clock::now();
-    if (stats.since == Clock::time_point{}) {
-        stats.since = now;
-    }
-    const double seconds = std::chrono::duration<double>(now - stats.since).count();
-    if (seconds < 10.0) {
-        return;
-    }
-    LOG_INFO(Lib_AudioIn,
-             "port {}: {:.0f}% of real time read, loudest buffer {:.1f} dB, average {:.1f} dB "
-             "(0 dB is full scale), {} status calls",
-             port_id, 100.0 * static_cast<double>(stats.frames) / (seconds * port.freq),
-             Decibels(stats.loudest),
-             Decibels(stats.samples != 0 ? std::sqrt(stats.squares / stats.samples) : 0.0),
-             stats.status_calls.exchange(0));
-    stats.since = now;
-    stats.frames = 0;
-    stats.samples = 0;
-    stats.squares = 0.0;
-    stats.loudest = 0.0;
-}
-
 /*
  * sceAudioIn implementation
  **/
@@ -226,11 +62,7 @@ int PS4_SYSV_ABI sceAudioInOpen(Libraries::UserService::OrbisUserServiceUserId u
     if (!initOnce) {
         // sceAudioInInit doesn't seem to be called by most apps before sceAudioInOpen so we init
         // here
-#ifdef ENABLE_BACHATA_RUNTIME
-        audio = std::make_unique<BachataAudioIn>();
-#else
         audio = std::make_unique<SDLAudioIn>();
-#endif
         initOnce = true;
     }
 
@@ -272,7 +104,6 @@ int PS4_SYSV_ABI sceAudioInOpen(Libraries::UserService::OrbisUserServiceUserId u
         port->format = format;
         port->samples_num = len;
         port->freq = freq;
-        input_stats[port_id].since = {};
 
         // Determine channel count and sample size based on format
         switch (format) {
@@ -294,7 +125,6 @@ int PS4_SYSV_ABI sceAudioInOpen(Libraries::UserService::OrbisUserServiceUserId u
         if (!port->impl) {
             throw std::runtime_error("Failed to create audio backend");
         }
-        port->available = port->impl->IsAvailable();
 
     } catch (const std::bad_alloc&) {
         LOG_ERROR(Lib_AudioIn, "Failed to allocate memory for audio port");
@@ -391,16 +221,7 @@ int PS4_SYSV_ABI sceAudioInInput(s32 handle, void* dest) {
     }
 
     std::scoped_lock lock{port->mutex};
-    const int frames = port->impl->Read(dest);
-    if (frames > 0) {
-        ApplyGain(*port, static_cast<s16*>(dest), frames);
-        ApplyScriptedLevel(*port, static_cast<s16*>(dest), frames);
-        NoteLoudness(*port, static_cast<const s16*>(dest), frames);
-        if (StatsEnabled()) {
-            NoteInput(port_id, *port, static_cast<const s16*>(dest), frames);
-        }
-    }
-    return frames;
+    return port->impl->Read(dest);
 }
 
 int PS4_SYSV_ABI sceAudioInGetSilentState(s32 handle) {
@@ -426,11 +247,9 @@ int PS4_SYSV_ABI sceAudioInGetSilentState(s32 handle) {
         return ORBIS_AUDIO_IN_ERROR_NOT_OPENED;
     }
 
-    // Not under the port's lock: a read holds that for as long as the sound it waits for
-    // lasts, and titles ask for this state from the threads that draw their frames.
-    input_stats[port_id].status_calls.fetch_add(1, std::memory_order_relaxed);
     u32 silent_state = 0;
-    if (!port->available) { // if no mic exist or is not available
+    std::scoped_lock lock{port->mutex};
+    if (!port->impl->IsAvailable()) { // if no mic exist or is not available
         silent_state |= ORBIS_AUDIO_IN_SILENT_STATE_DEVICE_NONE;
     }
     return silent_state;

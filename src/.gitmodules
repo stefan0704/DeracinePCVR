@@ -66,11 +66,6 @@
 	path = externals/half
 	url = https://github.com/ROCm/half.git
 	shallow = true
-[submodule "externals/dear_imgui"]
-	path = externals/dear_imgui
-	url = https://github.com/shadps4-emu/ext-imgui.git
-	shallow = true
-	branch = docking
 [submodule "externals/pugixml"]
 	path = externals/pugixml
 	url = https://github.com/zeux/pugixml.git
@@ -78,6 +73,10 @@
 [submodule "externals/discord-rpc"]
 	path = externals/discord-rpc
 	url = https://github.com/shadps4-emu/ext-discord-rpc.git
+	shallow = true
+[submodule "externals/LibAtrac9"]
+	path = externals/LibAtrac9
+	url = https://github.com/shadps4-emu/ext-LibAtrac9.git
 	shallow = true
 [submodule "externals/libpng"]
 	path = externals/libpng
@@ -132,7 +131,6 @@
 [submodule "externals/ImGuiFileDialog"]
 	path = externals/ImGuiFileDialog
 	url = https://github.com/shadexternals/ImGuiFileDialog.git
-	branch = shadps4
 [submodule "externals/spdlog"]
 	path = externals/spdlog
 	url = https://github.com/gabime/spdlog.git
@@ -152,14 +150,19 @@
 	path = externals/vulkan-loader
 	url = https://github.com/KhronosGroup/Vulkan-Loader
 	shallow = true
-[submodule "externals/libdeflate"]
-	path = externals/libdeflate
-	url = https://github.com/ebiggers/libdeflate.git
-[submodule "externals/bachata-xserver"]
-	path = externals/bachata-xserver
-	url = https://github.com/JICA98/bachata-xserver.git
-	shallow = true
-[submodule "externals/libadrenotools"]
-	path = externals/libadrenotools
-	url = https://github.com/JICA98/libadrenotools.git
-	shallow = true
+[submodule "externals/protobuf"]
+	path = externals/protobuf
+	url = https://github.com/shadexternals/protobuf.git
+[submodule "externals/zstd"]
+	path = externals/zstd
+	url = https://github.com/shadexternals/zstd.git
+[submodule "externals/zarchive"]
+	path = externals/zarchive
+	url = https://github.com/shadexternals/ZArchive.git
+[submodule "externals/abseil-cpp"]
+	path = externals/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git
+[submodule "externals/imgui"]
+	path = externals/imgui
+	url = https://github.com/shadexternals/imgui.git
+	branch = docking

@@ -1,21 +1,19 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <fmt/format.h>
 #include "common/alignment.h"
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
 #include "common/sha1.h"
-#include "common/singleton.h"
 #include "common/string_util.h"
 #include "core/aerolib/aerolib.h"
 #include "core/cpu_patches.h"
 #include "core/libraries/error_codes.h"
 #include "core/loader/dwarf.h"
 #include "core/memory.h"
-#include "core/linker.h"
-#include "core/known_title.h"
 #include "core/module.h"
 #include "core/tls.h"
 
@@ -23,7 +21,9 @@ namespace Core {
 
 using EntryFunc = PS4_SYSV_ABI int (*)(size_t args, const void* argp, void* param);
 
-static constexpr u64 ModuleLoadBase = 0x800000000;
+static constexpr u64 ExecutableLoadBase = 0x400000;
+static constexpr u64 GameModuleLoadBase = 0x80000000;
+static constexpr u64 SystemModuleLoadBase = 0x800000000;
 
 static u64 GetAlignedSize(const elf_program_header& phdr) {
     return (phdr.p_align != 0 ? (phdr.p_memsz + (phdr.p_align - 1)) & ~(phdr.p_align - 1)
@@ -86,9 +86,10 @@ static std::string StringToNid(std::string_view symbol) {
     return dst;
 }
 
-Module::Module(Core::MemoryManager* memory_, const std::filesystem::path& file_, u32& max_tls_index)
-    : memory{memory_}, file{file_}, name{file.filename().string()} {
-    elf.Open(file);
+Module::Module(Core::MemoryManager* memory_, const std::filesystem::path& file_,
+               std::unique_ptr<Core::FileSys::IFile> handle, u32& max_tls_index, s32 id_)
+    : id{id_}, memory{memory_}, file{file_}, name{file.filename().string()} {
+    elf.Open(std::move(handle));
     if (elf.IsElfFile()) {
         LoadModuleToMemory(max_tls_index);
         LoadDynamicInfo();
@@ -101,20 +102,7 @@ Module::~Module() = default;
 s32 Module::Start(u64 args, const void* argp, void* param) {
     LOG_INFO(Core_Linker, "Module started : {}", name);
     const VAddr addr = dynamic_info.init_virtual_addr + GetBaseAddress();
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-    const std::array<u64, 3> arguments{args, reinterpret_cast<u64>(argp),
-                                       reinterpret_cast<u64>(param)};
-    auto* linker = Common::Singleton<Linker>::Instance();
-    const auto result = linker->RunGuestFunction(addr, arguments);
-    if (const auto* failure = std::get_if<GuestExecutionFailure>(&result)) {
-        LOG_ERROR(Core_Linker, "FEX module start {} failed at stage {}: {}", name,
-                  static_cast<int>(failure->Stage), failure->Error);
-        return failure->Error == 0 ? -1 : -failure->Error;
-    }
-    return static_cast<s32>(std::get<u64>(result));
-#else
     return reinterpret_cast<EntryFunc>(addr)(args, argp, param);
-#endif
 }
 
 void Module::LoadModuleToMemory(u32& max_tls_index) {
@@ -128,9 +116,14 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
     aligned_base_size = Common::AlignUp(base_size, BlockAlign);
 
     // Reserve memory area for module
+    const bool is_executable =
+        elf_header.e_type == ET_SCE_EXEC || elf_header.e_type == ET_SCE_DYNEXEC;
+    const u64 load_base = is_executable   ? ExecutableLoadBase
+                          : IsSystemLib() ? SystemModuleLoadBase
+                                          : GameModuleLoadBase;
     void** out_addr = reinterpret_cast<void**>(&base_virtual_addr);
     s32 result =
-        memory->MapMemory(out_addr, ModuleLoadBase, aligned_base_size + TrampolineSize,
+        memory->MapMemory(out_addr, load_base, aligned_base_size + TrampolineSize,
                           MemoryProt::NoAccess, MemoryMapFlags::NoFlags, VMAType::Reserved, name);
     ASSERT_MSG(result == ORBIS_OK, "Failed to reserve memory for module {}", name);
     LOG_INFO(Core_Linker, "Loading module {} to {}", name, fmt::ptr(*out_addr));
@@ -186,6 +179,18 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
         }
     };
 
+#ifdef ARCH_X86_64
+    // Static patching rewrites the functions of the executable segments ahead of time. Initially
+    // useful because Windows uses it for guest red-zone protection, and macOS to apply its CPU
+    // patches, but now used on all OSes to patch 4-byte instructions
+#if defined(_WIN32)
+    const bool use_static_patching = WindowsGuestRedZoneProtection::IsStaticPatchingEnabled();
+#else
+    constexpr bool use_static_patching = true;
+#endif
+    std::vector<std::pair<VAddr, u64>> executable_segments;
+    std::vector<uintptr_t> function_starts;
+#endif
     for (u16 i = 0; i < elf_header.e_phnum; i++) {
         const auto header_type = elf.ElfPheaderTypeStr(elf_pheader[i].p_type);
         switch (elf_pheader[i].p_type) {
@@ -210,6 +215,9 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
 #ifdef ARCH_X86_64
             if (elf_pheader[i].p_flags & PF_EXEC) {
                 PrePatchInstructions(segment_addr, segment_file_size);
+                if (use_static_patching) {
+                    executable_segments.emplace_back(segment_addr, segment_file_size);
+                }
             }
 #endif
             break;
@@ -245,6 +253,88 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
         case PT_SCE_PROCPARAM:
             proc_param_virtual_addr = elf_pheader[i].p_vaddr + base_virtual_addr;
             break;
+        case PT_SCE_MODULE_PARAM:
+            module_param_virtual_addr = elf_pheader[i].p_vaddr + base_virtual_addr;
+            break;
+        case PT_INTERP: {
+            if (elf_pheader[i].p_filesz != 0) {
+                interpreter_path.resize(elf_pheader[i].p_filesz);
+                if (!elf.TryLoadSegment(std::bit_cast<VAddr>(interpreter_path.data()),
+                                        elf_pheader[i].p_offset, elf_pheader[i].p_filesz)) {
+                    LOG_WARNING(Core_Linker, "Unable to read {} segment of module {}", header_type,
+                                name);
+                    interpreter_path.clear();
+                    break;
+                }
+                while (!interpreter_path.empty() && interpreter_path.back() == '\0') {
+                    interpreter_path.pop_back();
+                }
+                LOG_INFO(Core_Linker, "Module interpreter: '{}'", interpreter_path);
+            }
+            break;
+        }
+        case PT_SCE_COMMENT: {
+            if (elf_pheader[i].p_filesz != 0) {
+                comment.resize(elf_pheader[i].p_filesz);
+                if (!elf.TryLoadSegment(std::bit_cast<VAddr>(comment.data()),
+                                        elf_pheader[i].p_offset, elf_pheader[i].p_filesz)) {
+                    LOG_WARNING(Core_Linker, "Unable to read {} segment of module {}", header_type,
+                                name);
+                    comment.clear();
+                    break;
+                }
+                if (comment.starts_with("PATH") && comment.size() > 12) {
+                    comment = comment.substr(12);
+                    comment = comment.substr(0, comment.find('\0'));
+                } else {
+                    for (char& c : comment) {
+                        if (c == '\0') {
+                            c = ' ';
+                        }
+                    }
+                    while (!comment.empty() && (comment.back() == ' ' || comment.back() == '\0')) {
+                        comment.pop_back();
+                    }
+                }
+                LOG_INFO(Core_Linker, "Module comment: '{}'", comment);
+            }
+            break;
+        }
+        case PT_SCE_LIBVERSION: {
+            if (elf_pheader[i].p_filesz != 0) {
+                std::vector<u8> libver_data(elf_pheader[i].p_filesz);
+                if (!elf.TryLoadSegment(std::bit_cast<VAddr>(libver_data.data()),
+                                        elf_pheader[i].p_offset, elf_pheader[i].p_filesz)) {
+                    LOG_WARNING(Core_Linker, "Unable to read {} segment of module {}", header_type,
+                                name);
+                    break;
+                }
+                if (!libver_data.empty()) {
+                    const u8 rec_len = libver_data[0];
+                    if (rec_len > 4 && 1u + rec_len <= libver_data.size()) {
+                        const std::string_view rec(
+                            reinterpret_cast<const char*>(libver_data.data() + 1), rec_len);
+                        const auto colon = rec.find(':');
+                        if (colon != std::string_view::npos && colon + 5 <= rec_len) {
+                            const u8* ver_bytes =
+                                reinterpret_cast<const u8*>(rec.data() + colon + 1);
+                            const u32 sdk_ver = (u32(ver_bytes[0]) << 24) |
+                                                (u32(ver_bytes[1]) << 16) |
+                                                (u32(ver_bytes[2]) << 8) | u32(ver_bytes[3]);
+                            LOG_INFO(Core_Linker, "SCE SDK version: {:x}.{:02x} [{:#010x}]",
+                                     ver_bytes[0], ver_bytes[1], sdk_ver);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        case PT_GNU_STACK:
+        case PT_GNU_RELRO:
+        case PT_NOTE:
+        case PT_PHDR:
+            // Non-loadable metadata/flags segments; nothing to map
+            break;
         case PT_GNU_EH_FRAME: {
             eh_frame_hdr_addr = elf_pheader[i].p_vaddr;
             eh_frame_hdr_size = elf_pheader[i].p_memsz;
@@ -252,6 +342,12 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
             const VAddr eh_hdr_end = eh_hdr_start + eh_frame_hdr_size;
             Dwarf::EHHeaderInfo hdr_info;
             if (Dwarf::DecodeEHHdr(eh_hdr_start, eh_hdr_end, hdr_info)) {
+#ifdef ARCH_X86_64
+                if (use_static_patching &&
+                    !Dwarf::DecodeEHHdrTable(hdr_info, eh_hdr_end, function_starts)) {
+                    LOG_ERROR(Core_Linker, "Failed to decode EH frame search table for {}", name);
+                }
+#endif
                 eh_frame_addr = hdr_info.eh_frame_ptr - base_virtual_addr;
                 if (eh_frame_hdr_addr > eh_frame_addr) {
                     eh_frame_size = (eh_frame_hdr_addr - eh_frame_addr);
@@ -270,13 +366,81 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
     LOG_INFO(Core_Linker, "program entry addr ..........: {:#018x}", entry_addr);
 
     if (MemoryPatcher::g_eboot_address == 0) {
-        if (name == "eboot.bin") {
+        // TODO: Come up with a more reliable way to detect the main executable.
+        std::string lower_name = name;
+        std::ranges::transform(lower_name, lower_name.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+        if (lower_name == "eboot.bin" || lower_name.ends_with(".elf")) {
             MemoryPatcher::g_eboot_address = base_virtual_addr;
             MemoryPatcher::g_eboot_image_size = base_size;
+            MemoryPatcher::g_eboot_name = name;
             MemoryPatcher::OnGameLoaded();
-            Core::KnownTitle::OnGameLoaded(base_virtual_addr, base_size);
         }
     }
+
+#ifdef ARCH_X86_64
+    // The game's memory patches are applied first, so that the code decoded here is the code
+    // that executes.
+    if (use_static_patching) {
+        const bool red_zone_protection = WindowsGuestRedZoneProtection::IsStaticPatchingEnabled();
+        RedZonePatchResult total{};
+        for (const auto& [segment_addr, segment_size] : executable_segments) {
+            total +=
+                red_zone_protection
+                    ? PatchRedZoneMemoryInstructions(segment_addr, segment_size, function_starts)
+                    : PatchCpuInstructionsStatically(segment_addr, segment_size, function_starts);
+        }
+        if (total.function_count == 0) {
+            if (!executable_segments.empty()) {
+                LOG_WARNING(Core_Linker,
+                            "Static patching could not find function boundaries for {}; it was "
+                            "not applied",
+                            name);
+            }
+        } else if (red_zone_protection) {
+            LOG_DEBUG(
+                Core_Linker,
+                "Windows guest red-zone static patching for {}: {} functions, {} instructions, "
+                "{} red-zone functions, {}/{} memory instructions patched "
+                "({} short, {} stack-dependent, {} control-flow, {} unrelocatable), "
+                "{}/{} short CPU patches applied ({} unsupported), {} indirect red-zone "
+                "functions",
+                name, total.function_count, total.instruction_count, total.red_zone_function_count,
+                total.patched_memory_instruction_count, total.memory_instruction_count,
+                total.short_memory_instruction_count,
+                total.stack_dependent_memory_instruction_count,
+                total.control_flow_memory_instruction_count,
+                total.unrelocatable_memory_instruction_count,
+                total.patched_cpu_patch_instruction_count, total.cpu_patch_instruction_count,
+                total.unsupported_cpu_patch_instruction_count,
+                total.indirect_red_zone_function_count);
+            if (total.stack_dependent_memory_instruction_count != 0 ||
+                total.control_flow_memory_instruction_count != 0 ||
+                total.unrelocatable_memory_instruction_count != 0 ||
+                total.unsupported_cpu_patch_instruction_count != 0) {
+                LOG_WARNING(
+                    Core_Linker,
+                    "Windows guest red-zone static patching for {} is partial: {} "
+                    "stack-dependent, {} control-flow, and {} unrelocatable memory instructions "
+                    "were not protected; {} CPU patch instructions were unsupported",
+                    name, total.stack_dependent_memory_instruction_count,
+                    total.control_flow_memory_instruction_count,
+                    total.unrelocatable_memory_instruction_count,
+                    total.unsupported_cpu_patch_instruction_count);
+            }
+        } else {
+            LOG_INFO(Core_Linker,
+                     "Static CPU patching for {}: {} functions, {} instructions patched in place, "
+                     "{}/{} short instructions relocated ({} left to the exception handler); "
+                     "outside functions: {} patched in place, {} left to the exception handler",
+                     name, total.function_count, total.inplace_cpu_patch_instruction_count,
+                     total.patched_cpu_patch_instruction_count, total.cpu_patch_instruction_count,
+                     total.unsupported_cpu_patch_instruction_count,
+                     total.uncovered_inplace_cpu_patch_instruction_count,
+                     total.uncovered_unsupported_cpu_patch_instruction_count);
+        }
+    }
+#endif
 }
 
 void Module::LoadDynamicInfo() {
@@ -507,6 +671,7 @@ void Module::LoadSymbols() {
 OrbisKernelModuleInfoEx Module::GetModuleInfoEx() const {
     return OrbisKernelModuleInfoEx{
         .name = info.name,
+        .id = id,
         .tls_index = tls.modid,
         .tls_init_addr = tls.image_virtual_addr,
         .tls_init_size = tls.init_image_size,
@@ -539,7 +704,7 @@ const ModuleInfo* Module::FindModule(std::string_view id) {
         }
         i++;
     }
-    return nullptr;
+    return id.empty() ? &export_modules[0] : nullptr;
 }
 
 const LibraryInfo* Module::FindLibrary(std::string_view id) {
@@ -557,14 +722,25 @@ const LibraryInfo* Module::FindLibrary(std::string_view id) {
         }
         i++;
     }
-    return nullptr;
+    return id.empty() ? &export_libs[0] : nullptr;
 }
 
 void* Module::FindByName(std::string_view name) {
     const auto nid_str = StringToNid(name);
     const auto symbols = export_sym.GetSymbols();
+    const auto it = std::ranges::find_if(symbols, [&](const Loader::SymbolRecord& record) {
+        return record.symbol.name == nid_str || record.symbol.nidName == name;
+    });
+    if (it != symbols.end()) {
+        return reinterpret_cast<void*>(it->virtual_address);
+    }
+    return nullptr;
+}
+
+void* Module::FindByNid(std::string_view nid) {
+    const auto symbols = export_sym.GetSymbols();
     const auto it = std::ranges::find_if(
-        symbols, [&](const Loader::SymbolRecord& record) { return record.name.contains(nid_str); });
+        symbols, [&](const Loader::SymbolRecord& record) { return record.symbol.name == nid; });
     if (it != symbols.end()) {
         return reinterpret_cast<void*>(it->virtual_address);
     }

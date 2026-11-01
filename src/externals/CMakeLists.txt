@@ -117,7 +117,7 @@ endif()
 # glslang
 if (NOT TARGET glslang::glslang)
     set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "")
-    set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "")
+    set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
     set(ENABLE_SPVREMAPPER OFF CACHE BOOL "")
     set(ENABLE_CTEST OFF CACHE BOOL "")
     set(ENABLE_HLSL OFF CACHE BOOL "")
@@ -196,14 +196,14 @@ endif()
 
 # Dear ImGui
 add_library(Dear_ImGui
-        dear_imgui/imgui.cpp
-        dear_imgui/imgui_demo.cpp
-        dear_imgui/imgui_draw.cpp
-        dear_imgui/imgui_internal.h
-        dear_imgui/imgui_tables.cpp
-        dear_imgui/imgui_widgets.cpp
+        imgui/imgui.cpp
+        imgui/imgui_demo.cpp
+        imgui/imgui_draw.cpp
+        imgui/imgui_internal.h
+        imgui/imgui_tables.cpp
+        imgui/imgui_widgets.cpp
 )
-target_include_directories(Dear_ImGui INTERFACE dear_imgui/)
+target_include_directories(Dear_ImGui INTERFACE imgui/)
 
 # Tracy
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -313,6 +313,10 @@ endif()
 add_library(minimp3 INTERFACE)
 target_include_directories(minimp3 INTERFACE minimp3)
 
+# dr_flac
+add_library(dr_flac INTERFACE)
+target_include_directories(dr_flac INTERFACE dr_flac)
+
 # ImGuiFileDialog
 add_library(ImGuiFileDialog ImGuiFileDialog/ImGuiFileDialog.cpp)
 target_compile_definitions(ImGuiFileDialog PRIVATE USE_STD_FILESYSTEM)
@@ -373,7 +377,7 @@ if (TARGET ZLIB::ZLIB)
     target_compile_definitions(Cpp_Httplib INTERFACE CPPHTTPLIB_ZLIB_SUPPORT)
     message(STATUS "cpp-httplib: zlib support enabled (gzip response decompression)")
 else()
-    message(STATUS "cpp-httplib: zlib not available — gzip responses will arrive uncompressed")
+    message(STATUS "cpp-httplib: zlib not available â€” gzip responses will arrive uncompressed")
 endif()
 
 if (DEFINED SSL_DEPENDENCIES)
@@ -381,7 +385,7 @@ if (DEFINED SSL_DEPENDENCIES)
     target_compile_definitions(Cpp_Httplib INTERFACE CPPHTTPLIB_OPENSSL_SUPPORT)
     message(STATUS "cpp-httplib: SSL support enabled (TLS connections)")
 else()
-    message(STATUS "cpp-httplib: OpenSSL/LibreSSL not available — libSceHttp HTTPS will fall back to mock at runtime.")
+    message(STATUS "cpp-httplib: OpenSSL/LibreSSL not available â€” libSceHttp HTTPS will fall back to mock at runtime.")
 endif()
 
 # macOS Vulkan driver
@@ -392,4 +396,49 @@ if (APPLE AND NOT ENABLE_SYSTEM_VULKAN AND NOT ENABLE_TESTS)
     add_subdirectory(mesa-kosmickrisp)
     set(VULKAN_DRIVER_PATH "${CMAKE_CURRENT_BINARY_DIR}/mesa-kosmickrisp/outputs/libvulkan_kosmickrisp.dylib" PARENT_SCOPE)
     set(VULKAN_ICD_PATH "${CMAKE_CURRENT_BINARY_DIR}/mesa-kosmickrisp/outputs/kosmickrisp_mesa_icd.json" PARENT_SCOPE)
+endif()
+
+# abseil (for protobuf)
+if (NOT TARGET absl::strings)
+    add_subdirectory(abseil-cpp EXCLUDE_FROM_ALL)
+endif()
+
+# protobuf
+set(protobuf_BUILD_TESTS              OFF CACHE INTERNAL "")
+set(protobuf_BUILD_EXAMPLES           OFF CACHE INTERNAL "")
+set(protobuf_BUILD_PROTOC_BINARIES    ON  CACHE INTERNAL "")
+set(protobuf_INSTALL                  OFF CACHE INTERNAL "")
+set(protobuf_WITH_ZLIB                OFF CACHE INTERNAL "")
+set(protobuf_BUILD_SHARED_LIBS        OFF CACHE INTERNAL "")
+set(protobuf_LOCAL_DEPENDENCIES_ONLY  ON  CACHE INTERNAL "")
+set(protobuf_FORCE_FETCH_DEPENDENCIES OFF CACHE INTERNAL "")
+if(MSVC)
+set(protobuf_MSVC_STATIC_RUNTIME OFF CACHE BOOL "" FORCE)
+endif()
+add_subdirectory(protobuf EXCLUDE_FROM_ALL)
+
+if (NOT TARGET zstd::libzstd)
+    # zstd (dependency of ZArchive)
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+    set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+    add_subdirectory(zstd/build/cmake)
+    add_library(zstd::libzstd ALIAS libzstd_static)
+endif()
+
+# ZArchive (.zar archive support)
+if (NOT TARGET ZArchive::zarchive)
+    add_library(zarchive STATIC
+        zarchive/src/zarchivereader.cpp
+        zarchive/src/zarchivewriter.cpp
+        zarchive/src/sha_256.c
+    )
+    target_include_directories(zarchive PUBLIC zarchive/include)
+    target_include_directories(zarchive PRIVATE zstd/lib)
+    target_link_libraries(zarchive PRIVATE zstd::libzstd)
+    target_compile_features(zarchive PRIVATE cxx_std_20)
+    add_library(ZArchive::zarchive ALIAS zarchive)
 endif()
