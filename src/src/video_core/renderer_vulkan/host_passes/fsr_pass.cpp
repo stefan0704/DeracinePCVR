@@ -3,9 +3,9 @@
 
 #include "common/assert.h"
 #include "core/emulator_settings.h"
-#include "video_core/host_shaders/fsr_comp.h"
+#include "video_core/host_shaders/fsr_easu_comp.h"
+#include "video_core/host_shaders/fsr_rcas_comp.h"
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
-#include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
@@ -26,12 +26,9 @@ struct FSRConstants {
 
 namespace Vulkan::HostPasses {
 
-void FsrPass::Create(const Instance& instance, MasterSemaphore* master_semaphore, vk::Device device,
-                     VmaAllocator allocator, u32 num_images) {
+void FsrPass::Create(vk::Device device, VmaAllocator allocator, u32 num_images) {
     this->device = device;
     this->num_images = num_images;
-    uses_push_descriptors = instance.IsPushDescriptorSupported();
-    desc_heap = DescriptorHeap{instance, master_semaphore, pool_sizes, 64};
 
     sampler = Check<"create upscaling sampler">(device.createSamplerUnique(vk::SamplerCreateInfo{
         .magFilter = vk::Filter::eLinear,
@@ -69,8 +66,7 @@ void FsrPass::Create(const Instance& instance, MasterSemaphore* master_semaphore
 
     descriptor_set_layout =
         Check<"create fsr descriptor set layout">(device.createDescriptorSetLayoutUnique({
-            .flags = uses_push_descriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptor
-                                           : vk::DescriptorSetLayoutCreateFlagBits{},
+            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptor,
             .bindingCount = layoutBindings.size(),
             .pBindings = layoutBindings.data(),
         }));
@@ -81,19 +77,11 @@ void FsrPass::Create(const Instance& instance, MasterSemaphore* master_semaphore
         .size = sizeof(FSRConstants),
     };
 
-    const auto& cs_easu_module =
-        Compile(HostShaders::FSR_COMP, vk::ShaderStageFlagBits::eCompute, device,
-                {
-                    "SAMPLE_EASU=1",
-                });
+    const auto& cs_easu_module = CompileSPV(FSR_EASU_COMP, device);
     ASSERT(cs_easu_module);
     SetObjectName(device, cs_easu_module, "fsr.comp [EASU]");
 
-    const auto& cs_rcas_module =
-        Compile(HostShaders::FSR_COMP, vk::ShaderStageFlagBits::eCompute, device,
-                {
-                    "SAMPLE_RCAS=1",
-                });
+    const auto& cs_rcas_module = CompileSPV(FSR_RCAS_COMP, device);
     ASSERT(cs_rcas_module);
     SetObjectName(device, cs_rcas_module, "fsr.comp [RCAS]");
 
@@ -248,19 +236,8 @@ vk::ImageView FsrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
             }};
 
             cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, easu_pipeline.get());
-            if (uses_push_descriptors) {
-                cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pipeline_layout.get(),
-                                            0, set_writes);
-            } else {
-                const auto desc_set = desc_heap.Commit(*descriptor_set_layout);
-                std::array<vk::WriteDescriptorSet, 3> dst_writes = set_writes;
-                for (auto& w : dst_writes) {
-                    w.dstSet = desc_set;
-                }
-                device.updateDescriptorSets(dst_writes, {});
-                cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout.get(), 0,
-                                          desc_set, {});
-            }
+            cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pipeline_layout.get(), 0,
+                                        set_writes);
             cmdbuf.pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eCompute, 0,
                                  sizeof(FSRConstants), &consts);
             cmdbuf.dispatch(dispatch_x, dispatch_y, 1);
@@ -334,19 +311,8 @@ vk::ImageView FsrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
             }};
 
             cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, rcas_pipeline.get());
-            if (uses_push_descriptors) {
-                cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pipeline_layout.get(),
-                                            0, set_writes);
-            } else {
-                const auto desc_set = desc_heap.Commit(*descriptor_set_layout);
-                std::array<vk::WriteDescriptorSet, 3> dst_writes = set_writes;
-                for (auto& w : dst_writes) {
-                    w.dstSet = desc_set;
-                }
-                device.updateDescriptorSets(dst_writes, {});
-                cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout.get(), 0,
-                                          desc_set, {});
-            }
+            cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pipeline_layout.get(), 0,
+                                        set_writes);
             cmdbuf.pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eCompute, 0,
                                  sizeof(FSRConstants), &consts);
             cmdbuf.dispatch(dispatch_x, dispatch_y, 1);
@@ -390,19 +356,8 @@ vk::ImageView FsrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
         }};
 
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, easu_pipeline.get());
-        if (uses_push_descriptors) {
-            cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pipeline_layout.get(), 0,
-                                        set_writes);
-        } else {
-            const auto desc_set = desc_heap.Commit(*descriptor_set_layout);
-            std::array<vk::WriteDescriptorSet, 3> dst_writes = set_writes;
-            for (auto& w : dst_writes) {
-                w.dstSet = desc_set;
-            }
-            device.updateDescriptorSets(dst_writes, {});
-            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout.get(), 0,
-                                      desc_set, {});
-        }
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pipeline_layout.get(), 0,
+                                    set_writes);
         cmdbuf.pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eCompute, 0,
                              sizeof(FSRConstants), &consts);
         cmdbuf.dispatch(dispatch_x, dispatch_y, 1);

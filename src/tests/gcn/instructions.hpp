@@ -8,6 +8,7 @@
 using OpcodeSOP1 = Shader::Gcn::OpcodeSOP1;
 using OpcodeSOP2 = Shader::Gcn::OpcodeSOP2;
 using OpcodeSOPK = Shader::Gcn::OpcodeSOPK;
+using OpcodeSOPC = Shader::Gcn::OpcodeSOPC;
 using OpcodeVOP1 = Shader::Gcn::OpcodeVOP1;
 using OpcodeVOP2 = Shader::Gcn::OpcodeVOP2;
 using OpcodeVOP3 = Shader::Gcn::OpcodeVOP3;
@@ -1139,6 +1140,30 @@ private:
     static_assert(sizeof(SOPKInternal) == sizeof(u32));
 };
 
+class SOPC {
+public:
+    explicit constexpr SOPC(OpcodeSOPC op, SOperand8 ssrc0, SOperand8 ssrc1) {
+        i.ssrc0 = std::to_underlying(ssrc0);
+        i.ssrc1 = std::to_underlying(ssrc1);
+        i.op = std::to_underlying(op);
+        i.encoding = 0b101111110;
+    }
+
+    u32 Get() {
+        return std::bit_cast<u32>(i);
+    }
+
+private:
+    struct SOPCInternal {
+        u32 ssrc0 : 8;
+        u32 ssrc1 : 8;
+        u32 op : 7;
+        u32 encoding : 9;
+    } i;
+
+    static_assert(sizeof(SOPCInternal) == sizeof(u32));
+};
+
 class VOP1 {
 public:
     explicit constexpr VOP1(OpcodeVOP1 op, VOperand8 vdst, SOperand9 src0) {
@@ -1266,7 +1291,7 @@ private:
         u64 src2 : 9;
         u64 omod : 2;
         u64 neg : 3;
-    } i;
+    } i{};
 
     static_assert(sizeof(VOP3Internal) == sizeof(u64));
 };
@@ -1345,7 +1370,7 @@ private:
         u64 src2 : 9;
         u64 op_sel_hi01 : 2;
         u64 neg : 3;
-    } i;
+    } i{};
 
     static_assert(sizeof(VOP3PInternal) == sizeof(u64));
 };

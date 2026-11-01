@@ -157,6 +157,7 @@ private:
     int readbacksModeSetting;
     bool readbackLinearImagesSetting;
     bool directMemoryAccessSetting;
+    bool windowsGuestRedZoneProtectionModeSetting;
     bool devkitConsoleSetting;
     bool neoModeSetting;
     bool shadnetEnabledSetting;
@@ -165,6 +166,9 @@ private:
     bool pipelineCacheArchiveSetting;
     int extraDmemSetting;
     int vblankFrequencySetting;
+
+    // Folders tab
+    int scanDepthSetting;
 };
 
 } // namespace ImGuiEmuSettings

@@ -6,57 +6,17 @@
 #include "core/loader/elf.h"
 #include "core/loader/symbols_resolver.h"
 #include "core/tls.h"
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-#include "core/guest_cpu/hle_call_adapter.h"
-#endif
 
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+void LinkSymbolImpl(Core::Loader::SymbolsResolver* sym, char const* nid, char const* lib,
+                    u16 libversion, char const* mod, u64 symbol, Core::Loader::SymbolType sym_type);
+
 #define LIB_FUNCTION(nid, lib, libversion, mod, function)                                          \
-    {                                                                                              \
-        Core::Loader::SymbolResolver sr{};                                                         \
-        sr.name = nid;                                                                             \
-        sr.library = lib;                                                                          \
-        sr.library_version = libversion;                                                           \
-        sr.module = mod;                                                                           \
-        sr.type = Core::Loader::SymbolType::Function;                                              \
-        /* FEX reaches HLE through an x86 syscall veneer, never an ARM host address. */           \
-        sym->AddFunction(sr, Core::GuestCpu::MakeHleCallAdapter(function));                        \
-    }
-/* Registers a function that takes the guest register frame instead of decoded arguments. */
-#define LIB_FUNCTION_RAW(nid, lib, libversion, mod, function)                                      \
-    {                                                                                              \
-        Core::Loader::SymbolResolver sr{};                                                         \
-        sr.name = nid;                                                                             \
-        sr.library = lib;                                                                          \
-        sr.library_version = libversion;                                                           \
-        sr.module = mod;                                                                           \
-        sr.type = Core::Loader::SymbolType::Function;                                              \
-        sym->AddFunction(sr, Core::GuestCpu::MakeRawHleCallAdapter(function));                     \
-    }
-#else
-#define LIB_FUNCTION(nid, lib, libversion, mod, function)                                          \
-    {                                                                                              \
-        Core::Loader::SymbolResolver sr{};                                                         \
-        sr.name = nid;                                                                             \
-        sr.library = lib;                                                                          \
-        sr.library_version = libversion;                                                           \
-        sr.module = mod;                                                                           \
-        sr.type = Core::Loader::SymbolType::Function;                                              \
-        auto func = reinterpret_cast<u64>(HOST_CALL(function));                                    \
-        sym->AddSymbol(sr, func);                                                                  \
-    }
-#endif
+    LinkSymbolImpl(sym, nid, lib, libversion, mod, reinterpret_cast<u64>(HOST_CALL(function)),     \
+                   Core::Loader::SymbolType::Function)
 
 #define LIB_OBJ(nid, lib, libversion, mod, obj)                                                    \
-    {                                                                                              \
-        Core::Loader::SymbolResolver sr{};                                                         \
-        sr.name = nid;                                                                             \
-        sr.library = lib;                                                                          \
-        sr.library_version = libversion;                                                           \
-        sr.module = mod;                                                                           \
-        sr.type = Core::Loader::SymbolType::Object;                                                \
-        sym->AddSymbol(sr, reinterpret_cast<u64>(obj));                                            \
-    }
+    LinkSymbolImpl(sym, nid, lib, libversion, mod, reinterpret_cast<u64>(obj),                     \
+                   Core::Loader::SymbolType::Object)
 
 namespace Libraries {
 

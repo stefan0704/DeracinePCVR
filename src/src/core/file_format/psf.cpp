@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstring>
+#include <ranges>
 
 #include "common/assert.h"
 #include "common/io_file.h"
@@ -42,6 +44,14 @@ bool PSF::Open(const std::filesystem::path& filepath) {
     file.Read(psf);
     file.Close();
     return Open(psf);
+}
+
+bool PSF::Open(const std::unique_ptr<Core::FileSys::IFile>& file) {
+    std::vector<u8> psf_buf(file->Size());
+    if (file->Read(psf_buf.data(), psf_buf.size()) != static_cast<s64>(psf_buf.size())) {
+        return false;
+    }
+    return Open(psf_buf);
 }
 
 bool PSF::Open(const std::vector<u8>& psf_buffer) {

@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cstdio>
-
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -14,11 +12,9 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-// Recompile cached shaders with universal vertex reciprocal refinement (Vertex only).
-static constexpr u32 ShaderBinaryVersion = 7u;
-// Shader metadata holds the runtime info, which now says how a final pass reads its scene.
-static constexpr u32 ShaderMetaVersion = 3u;
-static constexpr u32 PipelineKeyVersion = 2u;
+static constexpr u32 ShaderBinaryVersion = 11u;
+static constexpr u32 ShaderMetaVersion = 6u;
+static constexpr u32 PipelineKeyVersion = 3u;
 } // namespace Serialization
 
 namespace Vulkan {
@@ -96,7 +92,6 @@ void RegisterShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx)
 }
 
 bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
-                    std::optional<Shader::Gcn::FetchShaderData>& fetch_shader_data,
                     Shader::StageSpecialization& spec, size_t& perm_idx) {
     Serialization::Reader meta{ar};
 
@@ -118,8 +113,6 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
 
     spec.Deserialize(ar);
     info.Deserialize(ar);
-
-    fetch_shader_data = spec.fetch_shader_data;
     return true;
 }
 
@@ -247,7 +240,7 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
 
     infos.fill(nullptr);
     modules.fill(nullptr);
-    fetch_shader.reset();
+    fetch_shader = nullptr;
 
     return true;
 }
@@ -257,7 +250,7 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
     Shader::StageSpecialization spec{};
     spec.info = &program->info;
     size_t perm_idx{};
-    if (!LoadShaderMeta(ar, program->info, fetch_shader, spec, perm_idx)) {
+    if (!LoadShaderMeta(ar, program->info, spec, perm_idx)) {
         return false;
     }
 
@@ -281,10 +274,17 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
     } else {
         const auto& it = std::ranges::find(it_pgm.value()->modules, spec, &Program::Module::spec);
         if (it != it_pgm.value()->modules.end()) {
-            // If the permutation is already preloaded, make sure it has the same permutation index
+            // A matching permutation is valid only at its original index. A different index means
+            // the store holds entries from more than one cache generation, so this pipeline is
+            // left to compile at runtime.
             const auto idx = std::distance(it_pgm.value()->modules.begin(), it);
-            ASSERT_MSG(perm_idx == idx, "Permutation {} is already inserted at {}! ({}_{:x})",
-                       perm_idx, idx, program->info.stage, program->info.pgm_hash);
+            if (perm_idx != idx) {
+                LOG_WARNING(Render_Vulkan,
+                            "Cached permutation {} of {}_{:x} conflicts with index {}, skipping "
+                            "preload",
+                            perm_idx, program->info.hw_stage, program->info.pgm_hash, idx);
+                return false;
+            }
             module = it->module;
         } else {
             module = CompileSPV(spv, instance.GetDevice());
@@ -294,6 +294,9 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
 
     infos[stage] = &it_pgm.value()->info;
     modules[stage] = module;
+    if (auto& fetch = it_pgm.value()->modules[perm_idx].spec.fetch_shader_data; !fetch.Empty()) {
+        fetch_shader = &fetch;
+    }
 
     return true;
 }
@@ -302,14 +305,6 @@ void PipelineCache::WarmUp() {
     if (!EmulatorSettings.IsPipelineCacheEnabled()) {
         return;
     }
-
-#ifdef ENABLE_BACHATA_RUNTIME
-    // Cached Shader::Info / pipeline keys can embed guest pointers. Reloading
-    // them under FEX SIGSEGVs the host (Driveclub CUSA00093: read 0x6fc40c3ee0
-    // immediately after swapchain + ImGui init). Compile on demand instead.
-    std::fprintf(stderr, "BACHATA_PIPELINE_WARMUP_SKIP\n");
-    return;
-#endif
 
     Storage::DataBase::Instance().Open();
 
@@ -325,7 +320,17 @@ void PipelineCache::WarmUp() {
                                            std::move(profile_data));
         return;
     }
-    if (std::memcmp(profile_data.data(), &profile, sizeof(profile)) != 0) {
+    if (profile_data.size() != sizeof(Shader::Profile)) {
+        LOG_WARNING(Render,
+                    "Pipeline cache profile has unexpected size ({} != {}). Ignoring the cache",
+                    profile_data.size(), sizeof(Shader::Profile));
+        Storage::DataBase::Instance().Close();
+        return;
+    }
+
+    Shader::Profile cached_profile{};
+    std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
+    if (cached_profile != profile) {
         LOG_WARNING(Render,
                     "Pipeline cache isn't compatible with current system. Ignoring the cache");
         Storage::DataBase::Instance().Close();
@@ -435,9 +440,6 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     if (walker_func_size) {
         walker_func = RegisterWalkerCode(ar.CurrPtr(), walker_func_size);
         ar.Advance(walker_func_size);
-        if (!walker_func) {
-            return false;
-        }
     }
 
     return true;
@@ -451,9 +453,9 @@ void StageSpecialization::Serialize(Serialization::Archive& ar) const {
 
     spec.Write(bitset.to_string());
 
-    if (fetch_shader_data) {
-        spec.Write(sizeof(*fetch_shader_data));
-        fetch_shader_data->Serialize(ar);
+    if (!fetch_shader_data.Empty()) {
+        spec.Write(sizeof(fetch_shader_data));
+        fetch_shader_data.Serialize(ar);
     } else {
         spec.Write(size_t{0});
     }

@@ -1,30 +1,23 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <atomic>
-#include <cstdlib>
-#include <cstring>
 #include <memory>
 #include <mutex>
-#include <vector>
-#include <optional>
 #include <shared_mutex>
 #include <stop_token>
 #include <thread>
-#include <core/emulator_settings.h>
+#include <fmt/format.h>
 #include <magic_enum/magic_enum.hpp>
+
 #include "common/assert.h"
 #include "common/logging/log.h"
-#include "common/path_util.h"
 #include "common/thread.h"
-#include "common/wave_dump.h"
+#include "core/emulator_settings.h"
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
 #include "core/libraries/audio/audioout_error.h"
-#include "core/libraries/audio/surround_virtualizer.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
-#include "core/vr/vr_runtime.h"
 
 namespace Libraries::AudioOut {
 
@@ -116,15 +109,17 @@ static int GetPortRange(OrbisAudioOutPort type) {
 }
 
 static int GetPortId(s32 handle) {
-    int port_id = handle & 0xFF;
+    const int port_id = handle & 0xFF;
 
     if (port_id >= ORBIS_AUDIO_OUT_NUM_PORTS) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port");
+        LOG_DEBUG(Lib_AudioOut, "Invalid handle {:#x}: port index {} out of range (max {})", handle,
+                  port_id, ORBIS_AUDIO_OUT_NUM_PORTS - 1);
         return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT;
     }
 
     if ((handle & 0x3F000000) != 0x20000000) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port");
+        LOG_DEBUG(Lib_AudioOut, "Invalid handle {:#x}: bad magic {:#x}, expected {:#x}", handle,
+                  handle & 0x3F000000, 0x20000000);
         return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT;
     }
 
@@ -167,188 +162,47 @@ void AdjustVol() {
     }
 }
 
-/// When a port last played on a device that paces its writer (steady clock ticks), for how
-/// long after that the title counts as paced by it, and how much of a delay it may make up.
-static std::atomic<std::chrono::steady_clock::rep> device_paced_at{
-    std::numeric_limits<std::chrono::steady_clock::rep>::min() / 2};
-static constexpr std::chrono::milliseconds DevicePacedFor{200};
-static constexpr std::chrono::milliseconds CatchUp{200};
-
 static void AudioOutputThread(std::shared_ptr<PortOut> port, const std::stop_token& stop) {
     {
         const auto thread_name = fmt::format("shadPS4:AudioOutputThread:{}", fmt::ptr(port.get()));
         Common::SetCurrentThreadName(thread_name.c_str());
     }
 
-    // One buffer per the time it lasts. Without a device behind it, time lost (the emulator
-    // stalling) is not made up for: a burst of buffers afterwards would only be sound played in
-    // a hurry. With one, see below.
-    using Clock = std::chrono::steady_clock;
-    const auto period =
-        std::chrono::nanoseconds(1000000000ULL * port->buffer_frames / port->sample_rate);
-    auto next_buffer = Clock::now();
-
-    // SHADPS4_AUDIOOUT_DUMP=<seconds> records what the title hands to every port, as
-    // <user>/audioout_<type>_<n>.wav.
-    Common::WaveDump dump;
-    Common::WaveDump binaural_dump;
-    std::optional<SurroundVirtualizer> binaural;
-    std::vector<float> binaural_buffer;
-    if (const char* seconds = std::getenv("SHADPS4_AUDIOOUT_DUMP");
-        seconds != nullptr && std::atoi(seconds) > 0) {
-        static std::atomic<int> serial{0};
-        const auto path = Common::FS::GetUserPath(Common::FS::PathType::UserDir) /
-                          fmt::format("audioout_{}_{}.wav", magic_enum::enum_name(port->type),
-                                      serial.fetch_add(1));
-        dump.Open(path.string(), port->format_info.num_channels, port->sample_rate,
-                  u64(std::atoi(seconds)) * port->sample_rate);
-        if (port->format_info.num_channels == 8) {
-            // What a headset wearer gets to hear of a surround port.
-            auto binaural_path = path;
-            binaural_path.replace_extension(".binaural.wav");
-            binaural_dump.Open(binaural_path.string(), 2, port->sample_rate,
-                               u64(std::atoi(seconds)) * port->sample_rate);
-            binaural.emplace(port->format_info.channel_layout, port->sample_rate);
-        }
-    }
-
-    // With a VR headset as the display, the AUX port carries what the television plays for the
-    // people watching; the wearer hears the main port. Playing both would double every sound.
-    const bool muted =
-        port->type == OrbisAudioOutPort::Aux && Core::Vr::Runtime::Instance().IsHeadsetConnected();
-    if (muted) {
-        LOG_INFO(Lib_AudioOut, "the AUX port is the mix for the television and is not played");
-    }
-
-    // The buffer the title handed over is taken out from under the lock and played without it.
-    // A backend may well block while playing (that is how a real device paces its writer), and
-    // a title that feeds several ports in one call takes all their locks: holding one for the
-    // length of a buffer made every such call last as many buffers as it had ports.
-    std::vector<u8> playing(port->BufferSize());
-
-    const char* stats_setting = std::getenv("SHADPS4_AUDIOOUT_STATS");
-    const bool stats = stats_setting != nullptr && stats_setting[0] != '0';
-    auto stats_since = Clock::now();
-    u64 played = 0;
-    u64 idle = 0;
-    Clock::duration output_time{};
+    Common::AccurateTimer timer(
+        std::chrono::nanoseconds(1000000000ULL * port->buffer_frames / port->sample_rate));
 
     while (true) {
-        // A real audio device paces whoever writes to it: it takes sound when it has room, and
-        // what it holds ahead of the speakers is all that stands between a title that is late
-        // for a moment and a gap in the sound. Once a port of the title plays on such a device,
-        // every port leaves the pace to it:
-        //  - buffers are asked for a little early. A device runs by its own clock, never quite
-        //    this one, and one that runs a hair fast would otherwise be starved now and then.
-        //  - a title that fell behind may hand over what it missed at once. The device has room
-        //    for exactly that, and gets back what it holds ahead; without it every delay eats
-        //    into that for good, until each hiccup is heard.
-        // The title hands the buffers of all its ports over together, so the ports that play
-        // nothing must not hold back the one that does.
-        const auto now = Clock::now();
-        const bool paces = port->impl && port->impl->IsDevicePaced();
-        if (paces) {
-            device_paced_at.store(now.time_since_epoch().count(), std::memory_order_relaxed);
-        }
-        const bool device_paced =
-            paces || now.time_since_epoch().count() -
-                             device_paced_at.load(std::memory_order_relaxed) <
-                         Clock::duration{DevicePacedFor}.count();
-        const auto step = device_paced ? period - period / 100 : period;
-        if (now < next_buffer) {
-            Common::AccurateSleep(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                      next_buffer - now),
-                                  nullptr, false);
-        } else if (device_paced) {
-            if (now - next_buffer > Clock::duration{CatchUp}) {
-                next_buffer = now - Clock::duration{CatchUp};
-            }
-        } else if (now - next_buffer > period) {
-            next_buffer = now;
-        }
+        timer.Start();
 
-        bool have_buffer = false;
         {
             std::unique_lock lock{port->mutex};
             if (!port->impl || stop.stop_requested()) {
                 break;
             }
 
-            if (device_paced && !port->output_ready) {
-                // Nothing to play yet: the schedule waits for the title, along with this.
-                port->output_cv.wait_for(lock, period, [&] {
-                    return port->output_ready || stop.stop_requested();
-                });
-            }
-            if (port->output_ready || !device_paced) {
-                next_buffer += step;
-            }
-
             if (port->output_ready) {
-                std::memcpy(playing.data(), port->output_buffer, playing.size());
-                have_buffer = true;
+                port->impl->Output(port->output_buffer);
                 port->output_ready = false;
                 port->last_output_time =
                     Kernel::sceKernelGetProcessTime(); // moved from sceAudioOutOutput TOOD recheck
             }
         }
 
-        port->output_cv.notify_one();
-
-        if (have_buffer) {
-            if (dump.IsOpen()) {
-                if (port->format_info.is_float) {
-                    dump.Write(reinterpret_cast<const float*>(playing.data()),
-                               port->buffer_frames);
-                } else if (port->format_info.sample_size == 2) {
-                    dump.Write(reinterpret_cast<const s16*>(playing.data()), port->buffer_frames);
-                }
-            }
-            if (binaural) {
-                binaural_buffer.resize(size_t{port->buffer_frames} * 2);
-                if (port->format_info.is_float) {
-                    binaural->Process(reinterpret_cast<const float*>(playing.data()),
-                                      port->buffer_frames, binaural_buffer.data());
-                } else {
-                    binaural->Process(reinterpret_cast<const s16*>(playing.data()),
-                                      port->buffer_frames, binaural_buffer.data());
-                }
-                binaural_dump.Write(binaural_buffer.data(), port->buffer_frames);
-            }
-            if (muted) {
-                std::memset(playing.data(), 0, playing.size());
-            }
-            const auto output_begin = Clock::now();
-            port->impl->Output(playing.data());
-            output_time += Clock::now() - output_begin;
-            ++played;
-        } else {
-            ++idle;
-        }
-
-        // SHADPS4_AUDIOOUT_STATS=1: every ten seconds, how much of real time the port played
-        // and what kept it from more: the title not handing buffers over, or the device not
-        // taking them.
-        if (stats && Clock::now() - stats_since >= std::chrono::seconds{10}) {
-            const double seconds = std::chrono::duration<double>(Clock::now() - stats_since).count();
-            LOG_INFO(Lib_AudioOut,
-                     "port {} ({}): {:.0f}% of real time played, {} rounds without a buffer, "
-                     "{:.2f} ms per buffer in the output",
-                     magic_enum::enum_name(port->type), fmt::ptr(port.get()),
-                     100.0 * played * port->buffer_frames / port->sample_rate / seconds, idle,
-                     played != 0
-                         ? std::chrono::duration<double, std::milli>(output_time).count() / played
-                         : 0.0);
-            played = 0;
-            idle = 0;
-            output_time = {};
-            stats_since = Clock::now();
-        }
+        port->output_cv.notify_all();
 
         if (stop.stop_requested()) {
             break;
         }
+
+        timer.End();
     }
+
+    {
+        std::unique_lock lock{port->mutex};
+        port->closing = true;
+        port->output_ready = false;
+    }
+    port->output_cv.notify_all();
 }
 
 /*
@@ -362,15 +216,11 @@ s32 PS4_SYSV_ABI sceAudioOutInit() {
         return ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT;
     }
 
-#ifdef ENABLE_BACHATA_RUNTIME
-    audio = std::make_unique<BachataAudioOut>();
-#else
     if (EmulatorSettings.GetAudioBackend() == AudioBackend::OpenAL) {
         audio = std::make_unique<OpenALAudioOut>();
     } else {
         audio = std::make_unique<SDLAudioOut>();
     }
-#endif
 
     LOG_INFO(Lib_AudioOut, "Audio system initialized");
     return ORBIS_OK;
@@ -490,8 +340,7 @@ s32 PS4_SYSV_ABI sceAudioOutOpen(UserService::OrbisUserServiceUserId user_id,
         }
 
         // Start output thread - pass shared_ptr by value to keep port alive
-        port->output_thread.Run(
-            [port](const std::stop_token& stop) { AudioOutputThread(port, stop); });
+        port->output_thread.Run([port](std::stop_token stop) { AudioOutputThread(port, stop); });
 
         // Set initial volume
         port->impl->SetVolume(port->volume);
@@ -510,19 +359,10 @@ s32 PS4_SYSV_ABI sceAudioOutOpen(UserService::OrbisUserServiceUserId user_id,
 
     // Create handle
     s32 handle = (_type << 16) | port_id | 0x20000000;
+    LOG_INFO(Lib_AudioOut, "opened port_type={}({}) -> port_id={}, handle={:#x}",
+             magic_enum::enum_name(port_type), _type, port_id, handle);
     return handle;
 }
-
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-s32 PS4_SYSV_ABI fex_sceAudioOutOpen(UserService::OrbisUserServiceUserId user_id,
-                                     OrbisAudioOutPort port_type, s32 index, u32 length,
-                                     u32 sample_rate, u32 param_raw) {
-    OrbisAudioOutParamExtendedInformation param_type{};
-    static_assert(sizeof(param_type) == sizeof(param_raw));
-    std::memcpy(&param_type, &param_raw, sizeof(param_type));
-    return sceAudioOutOpen(user_id, port_type, index, length, sample_rate, param_type);
-}
-#endif
 
 s32 PS4_SYSV_ABI sceAudioOutClose(s32 handle) {
     LOG_INFO(Lib_AudioOut, "handle = {:#x}", handle);
@@ -534,7 +374,7 @@ s32 PS4_SYSV_ABI sceAudioOutClose(s32 handle) {
 
     int port_id = GetPortId(handle);
     if (port_id < 0) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port id");
+        LOG_ERROR(Lib_AudioOut, "Invalid port id for handle {:#x}", handle);
         return port_id;
     }
 
@@ -565,10 +405,22 @@ s32 PS4_SYSV_ABI sceAudioOutClose(s32 handle) {
         return ORBIS_AUDIO_OUT_ERROR_NOT_OPENED;
     }
 
-    // Stop the output thread
+    // Kick out any guest thread blocked in sceAudioOutOutput before joining.
+    {
+        std::unique_lock port_lock{port->mutex};
+        port->closing = true;
+        port->output_ready = false;
+    }
+    port->output_cv.notify_all();
+
+    // Stop the output thread.
     port->output_thread.Stop();
 
-    std::free(port->output_buffer);
+    {
+        std::unique_lock port_lock{port->mutex};
+        std::free(port->output_buffer);
+        port->output_buffer = nullptr;
+    }
 
     LOG_DEBUG(Lib_AudioOut, "Closed audio port {}", port_id);
     return ORBIS_OK;
@@ -582,7 +434,7 @@ s32 PS4_SYSV_ABI sceAudioOutGetLastOutputTime(s32 handle, u64* output_time) {
 
     int port_id = GetPortId(handle);
     if (port_id < 0) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port id");
+        LOG_DEBUG(Lib_AudioOut, "Invalid port id for handle {:#x}", handle);
         return port_id;
     }
 
@@ -616,7 +468,7 @@ s32 PS4_SYSV_ABI sceAudioOutGetPortState(s32 handle, OrbisAudioOutPortState* sta
 
     int port_id = GetPortId(handle);
     if (port_id < 0) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port id");
+        LOG_DEBUG(Lib_AudioOut, "Invalid port id for handle {:#x}", handle);
         return port_id;
     }
 
@@ -689,7 +541,7 @@ s32 PS4_SYSV_ABI sceAudioOutOutput(s32 handle, void* ptr) {
 
     int port_id = GetPortId(handle);
     if (port_id < 0) {
-        LOG_ERROR(Lib_AudioOut, "invalid port id");
+        LOG_ERROR(Lib_AudioOut, "invalid port id for handle {:#x}", handle);
         return port_id;
     }
 
@@ -720,7 +572,12 @@ s32 PS4_SYSV_ABI sceAudioOutOutput(s32 handle, void* ptr) {
     s32 samples_sent = 0;
     {
         std::unique_lock lock{port->mutex};
-        port->output_cv.wait(lock, [&] { return !port->output_ready; });
+        port->output_cv.wait(lock, [&] { return !port->output_ready || port->closing; });
+
+        if (port->closing) {
+            LOG_DEBUG(Lib_AudioOut, "Port {} closed while waiting for drain", port_id);
+            return ORBIS_AUDIO_OUT_ERROR_NOT_OPENED;
+        }
 
         if (ptr != nullptr) {
             std::memcpy(port->output_buffer, ptr, port->BufferSize());
@@ -728,8 +585,6 @@ s32 PS4_SYSV_ABI sceAudioOutOutput(s32 handle, void* ptr) {
             samples_sent = port->buffer_frames * port->format_info.num_channels;
         }
     }
-    // The port's thread may be waiting for exactly this.
-    port->output_cv.notify_all();
 
     return samples_sent;
 }
@@ -819,7 +674,13 @@ s32 PS4_SYSV_ABI sceAudioOutOutputs(OrbisAudioOutOutputParam* param, u32 num) {
 
     // Wait for all ports to be ready
     for (u32 i = 0; i < num; i++) {
-        ports[i]->output_cv.wait(locks[i], [&] { return !ports[i]->output_ready; });
+        ports[i]->output_cv.wait(locks[i],
+                                 [&] { return !ports[i]->output_ready || ports[i]->closing; });
+
+        if (ports[i]->closing) {
+            LOG_DEBUG(Lib_AudioOut, "Port closed while waiting for drain");
+            return ORBIS_AUDIO_OUT_ERROR_NOT_OPENED;
+        }
     }
 
     // Copy data to all ports
@@ -828,11 +689,6 @@ s32 PS4_SYSV_ABI sceAudioOutOutputs(OrbisAudioOutOutputParam* param, u32 num) {
             std::memcpy(ports[i]->output_buffer, param[i].ptr, ports[i]->BufferSize());
             ports[i]->output_ready = true;
         }
-    }
-    // The ports' threads may be waiting for exactly this.
-    locks.clear();
-    for (u32 i = 0; i < num; i++) {
-        ports[i]->output_cv.notify_all();
     }
 
     return buffer_frames;
@@ -1328,12 +1184,7 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceAudioOutMasteringSetParam);
     LIB_FUNCTION("RVWtUgoif5o", "libSceAudioOut", 1, "libSceAudioOut", sceAudioOutMasteringTerm);
     LIB_FUNCTION("-LXhcGARw3k", "libSceAudioOut", 1, "libSceAudioOut", sceAudioOutMbusInit);
-#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
-    LIB_FUNCTION("ekNvsT22rsY", "libSceAudioOut", 1, "libSceAudioOut",
-                 fex_sceAudioOutOpen);
-#else
     LIB_FUNCTION("ekNvsT22rsY", "libSceAudioOut", 1, "libSceAudioOut", sceAudioOutOpen);
-#endif
     LIB_FUNCTION("qLpSK75lXI4", "libSceAudioOut", 1, "libSceAudioOut", sceAudioOutOpenEx);
     LIB_FUNCTION("QOQtbeDqsT4", "libSceAudioOut", 1, "libSceAudioOut", sceAudioOutOutput);
     LIB_FUNCTION("w3PdaSTSwGE", "libSceAudioOut", 1, "libSceAudioOut", sceAudioOutOutputs);

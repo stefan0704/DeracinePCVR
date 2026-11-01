@@ -9,12 +9,16 @@ include(FetchContent)
 )
 FetchContent_MakeAvailable(googletest)
 
+foreach(gtest_target gtest gtest_main gmock gmock_main)
+    if (TARGET ${gtest_target})
+        target_compile_options(${gtest_target} PRIVATE $<IF:$<BOOL:${MSVC}>,/WX-,-Wno-error>)
+    endif()
+endforeach()
+
 set(TEST_TARGETS
     shadps4_settings_test
+    shadps4_ngs2_test
     shadps4_gcn_test
-    shadps4_guest_memory_validation_test
-    shadps4_imgui_memory_test
-    shadps4_libc_mspace_test
 )
 
 set(SETTINGS_TEST_SOURCES
@@ -27,11 +31,14 @@ set(SETTINGS_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
     ${CMAKE_SOURCE_DIR}/src/common/error.cpp
     ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/classes.cpp
     ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
 
     # Stubs that replace dependencies
     stubs/common_stub.cpp
     stubs/core_stub.cpp
+    stubs/signals_stub.cpp
+    stubs/file_sys_stub.cpp
     stubs/scm_rev_stub.cpp
     stubs/sdl_stub.cpp
 
@@ -39,6 +46,32 @@ set(SETTINGS_TEST_SOURCES
     test_emulator_settings.cpp
 )
 
+set(NGS2_TEST_SOURCES
+    # Under test
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/ngs2/ngs2_impl.cpp
+
+    # Minimal common and kernel support
+    ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/kernel/sync/mutex.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/classes.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
+
+    # Stubs that replace dependencies
+    stubs/common_stub.cpp
+    stubs/core_stub.cpp
+    stubs/signals_stub.cpp
+    stubs/file_sys_stub.cpp
+    stubs/scm_rev_stub.cpp
+    stubs/sdl_stub.cpp
+
+    # Tests
+    test_ngs2.cpp
+)
 set(GCN_TEST_SOURCES
     # Under test
     ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
@@ -96,8 +129,6 @@ set(GCN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/ir_passes.h
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/constant_propagation_pass.cpp
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/dead_code_elimination_pass.cpp
-    ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/identity_removal_pass.cpp
-    ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/resource_tracking_pass.cpp
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/shader_info_collection_pass.cpp
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/passes/ssa_rewrite_pass.cpp
     ${CMAKE_SOURCE_DIR}/src/shader_recompiler/ir/post_order.cpp
@@ -116,6 +147,7 @@ set(GCN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/error.cpp
     ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
     ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/classes.cpp
     ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
     ${CMAKE_SOURCE_DIR}/src/common/ntapi.cpp
 
@@ -125,6 +157,8 @@ set(GCN_TEST_SOURCES
     stubs/scm_rev_stub.cpp
     stubs/sdl_stub.cpp
     stubs/core_stub.cpp
+    stubs/signals_stub.cpp
+    stubs/file_sys_stub.cpp
 
     gcn/gcn_test_runner.hpp
     gcn/gcn_test_runner.cpp
@@ -133,54 +167,30 @@ set(GCN_TEST_SOURCES
 
     # Tests
     gcn/test_gcn_instructions.cpp
-    gcn/test_geometry_inputs.cpp
-    gcn/test_image_host_view.cpp
-    gcn/test_pm4_stall_log.cpp
-
-    # Vulkan-Hpp dispatch test (vkCmdBindVertexBuffers2)
-    gcn/test_vk_dispatch_bindvb2.cpp
-    ${CMAKE_SOURCE_DIR}/src/video_core/buffer_cache/vk_dispatch_reload.cpp
-    ${CMAKE_SOURCE_DIR}/src/video_core/buffer_cache/vk_dispatch_reload.h
-)
-
-set(IMGUI_MEMORY_TEST_SOURCES
-    imgui/test_memory_type_selection.cpp
-)
-
-set(GUEST_MEMORY_VALIDATION_TEST_SOURCES
-    core/test_guest_memory_validation_cache.cpp
-    core/test_pthread_stack_placement.cpp
-    core/test_mouse_open_param.cpp
-    core/test_flip_label_tracker.cpp
-    core/test_fios2_module_choice.cpp
-    video_core/test_legacy_vertex_attributes.cpp
-    video_core/test_readconst_snapshot_diag.cpp
-    video_core/test_fma_split_diag.cpp
-    video_core/test_recip_refine_fix.cpp
-)
-
-set(LIBC_MSPACE_TEST_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/core/libraries/libc_internal/mspace.cpp
-    core/test_libc_mspace.cpp
 )
 
 add_executable(shadps4_settings_test ${SETTINGS_TEST_SOURCES})
+add_executable(shadps4_ngs2_test ${NGS2_TEST_SOURCES})
 add_executable(shadps4_gcn_test ${GCN_TEST_SOURCES})
-add_executable(shadps4_guest_memory_validation_test ${GUEST_MEMORY_VALIDATION_TEST_SOURCES})
-add_executable(shadps4_imgui_memory_test ${IMGUI_MEMORY_TEST_SOURCES})
-add_executable(shadps4_libc_mspace_test ${LIBC_MSPACE_TEST_SOURCES})
 
 foreach(t ${TEST_TARGETS})
     target_include_directories(${t} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/tests
     )
     target_compile_features(${t} PRIVATE cxx_std_23)
     target_compile_definitions(${t} PRIVATE BOOST_ASIO_STANDALONE)
 endforeach()
 
 target_link_libraries(shadps4_settings_test PRIVATE
+    GTest::gtest_main
+    fmt::fmt
+    nlohmann_json::nlohmann_json
+    toml11::toml11
+    SDL3::SDL3
+    spdlog::spdlog
+)
+target_link_libraries(shadps4_ngs2_test PRIVATE
     GTest::gtest_main
     fmt::fmt
     nlohmann_json::nlohmann_json
@@ -196,30 +206,10 @@ target_link_libraries(shadps4_gcn_test PRIVATE
     toml11::toml11
     Boost::headers
     Vulkan::Headers
-    tsl::robin_map
-    GPUOpen::VulkanMemoryAllocator
     sirit
     SDL3::SDL3
     spdlog::spdlog
     half::half
-)
-
-# vk_dispatch_reload.cpp must not be LTO-optimized (same as in the main binary)
-set_source_files_properties(
-    ${CMAKE_SOURCE_DIR}/src/video_core/buffer_cache/vk_dispatch_reload.cpp
-    PROPERTIES COMPILE_FLAGS "-fno-lto"
-)
-target_link_libraries(shadps4_imgui_memory_test PRIVATE
-    GTest::gtest_main
-    Vulkan::Headers
-)
-target_link_libraries(shadps4_guest_memory_validation_test PRIVATE
-    GTest::gtest_main
-    fmt::fmt
-    spdlog::spdlog
-)
-target_link_libraries(shadps4_libc_mspace_test PRIVATE
-    GTest::gtest_main
 )
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
@@ -282,6 +272,7 @@ set(HTTP_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
     ${CMAKE_SOURCE_DIR}/src/common/error.cpp
     ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/classes.cpp
     ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
 
     # Stubs that replace dependencies
@@ -290,6 +281,8 @@ set(HTTP_TEST_SOURCES
     stubs/sdl_stub.cpp
     stubs/loader_stub.cpp
     stubs/core_stub.cpp
+    stubs/signals_stub.cpp
+    stubs/file_sys_stub.cpp
     stubs/kernel_stub.cpp
 
     # Tests
@@ -318,6 +311,7 @@ target_link_libraries(shadps4_http_test PRIVATE
     toml11::toml11
     SDL3::SDL3
     spdlog::spdlog
+    ZLIB::ZLIB
 )
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
@@ -354,599 +348,210 @@ gtest_discover_tests(shadps4_http_test
 )
 
 # ===========================================================================
-# Bachata Android runtime protocol tests
+# Core::Net tests (host sockets, guest layer, P2P transport, TCP, wire codec)
 # ===========================================================================
 
-set(BACHATA_RUNTIME_TEST_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/platform/bachata/runtime_client.cpp
-    ${CMAKE_SOURCE_DIR}/src/platform/bachata/controller_snapshot.cpp
-    ${CMAKE_SOURCE_DIR}/src/platform/bachata/audio_transport.cpp
-    platform/test_bachata_runtime_client.cpp
-    platform/test_bachata_controller_snapshot.cpp
+set(NET_CORE_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/core/net/guest_net.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/net/host_net.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/net/p2p_codec.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/net/p2p_crypto.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/net/p2p_transport.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/net/p2p_tcp.cpp
 )
 
-add_executable(shadps4_bachata_runtime_test ${BACHATA_RUNTIME_TEST_SOURCES})
+# libcrypto for p2p_crypto.cpp:
+get_directory_property(NET_TEST_SSL_LIBS DIRECTORY ${CMAKE_SOURCE_DIR}/externals
+                       DEFINITION SSL_DEPENDENCIES)
+if (NOT NET_TEST_SSL_LIBS)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    set(NET_TEST_SSL_LIBS OpenSSL::Crypto)
+endif()
 
-target_include_directories(shadps4_bachata_runtime_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
+add_executable(shadps4_net_test
+    ${NET_CORE_SOURCES}
+    network/test_net_host.cpp
+    network/test_net_p2p_codec.cpp
+    network/test_net_p2p_guest.cpp
+    network/test_net_p2p_tcp.cpp
 )
-target_compile_features(shadps4_bachata_runtime_test PRIVATE cxx_std_23)
 
-target_link_libraries(shadps4_bachata_runtime_test PRIVATE
-    FFmpeg::ffmpeg
-    GTest::gtest_main
+# Our TCP against the Linux kernel's TCP through a TUN device. Needs root or CAP_NET_ADMIN
+# and skips itself otherwise (and on other platforms). Separate target so it can run serially:
+# every test creates the same TUN interface.
+add_executable(shadps4_net_interop_test
+    ${CMAKE_SOURCE_DIR}/src/core/net/p2p_tcp.cpp
+    network/test_net_p2p_tcp_interop.cpp
 )
 
-gtest_discover_tests(shadps4_bachata_runtime_test
+foreach(t shadps4_net_test shadps4_net_interop_test)
+    list(APPEND TEST_TARGETS ${t})
+    target_include_directories(${t} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_compile_features(${t} PRIVATE cxx_std_23)
+    target_link_libraries(${t} PRIVATE GTest::gtest_main)
+
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+        CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        include(CheckCXXSymbolExists)
+        check_cxx_symbol_exists(_LIBCPP_VERSION version LIBCPP)
+        if (LIBCPP)
+            target_compile_options(${t} PRIVATE -fexperimental-library)
+        endif()
+    endif()
+
+    if (WIN32)
+        target_link_libraries(${t} PRIVATE onecore ws2_32)
+        target_compile_definitions(${t} PRIVATE
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+            NTDDI_VERSION=0x0A000006
+            _WIN32_WINNT=0x0A00
+            WINVER=0x0A00
+        )
+        if (MSVC)
+            target_compile_definitions(${t} PRIVATE
+                _CRT_SECURE_NO_WARNINGS
+                _CRT_NONSTDC_NO_DEPRECATE
+                _SCL_SECURE_NO_WARNINGS
+                _TIMESPEC_DEFINED
+            )
+        endif()
+    endif()
+endforeach()
+
+target_link_libraries(shadps4_net_test PRIVATE ${NET_TEST_SSL_LIBS})
+if (WIN32)
+    target_link_libraries(shadps4_net_test PRIVATE wepoll)
+endif()
+
+gtest_discover_tests(shadps4_net_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
+    PROPERTIES TIMEOUT 300
 )
-
-# ===========================================================================
-# libSceUsbd event-loop null-context safety (Driveclub FFB thread)
-# ===========================================================================
-
-add_executable(shadps4_usbd_test
-    libraries/test_usbd_event_loop.cpp
-)
-
-target_include_directories(shadps4_usbd_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-)
-target_compile_features(shadps4_usbd_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_usbd_test PRIVATE
-    GTest::gtest_main
-    libusb::usb
-)
-
-gtest_discover_tests(shadps4_usbd_test
+gtest_discover_tests(shadps4_net_interop_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
+    PROPERTIES RUN_SERIAL TRUE TIMEOUT 600
 )
 
 # ===========================================================================
-# libSceJpegDec HLE (Driveclub splash / packed JPEG textures)
+# New libSceNet (src/core/libraries/net) on top of Core::Net
 # ===========================================================================
+# The library with the same logging/HLE support as the HTTP test; its kernel glue
+# (net_kernel.cpp) is tested separately against a stub of the kernel.
 
-add_executable(shadps4_jpegdec_test
-    libraries/test_jpegdec.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/libraries/jpeg/jpegdec.cpp
-)
-target_include_directories(shadps4_jpegdec_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/externals/stb
-)
-target_compile_definitions(shadps4_jpegdec_test PRIVATE JPEGDEC_STANDALONE_TEST)
-target_compile_features(shadps4_jpegdec_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_jpegdec_test PRIVATE
-    GTest::gtest_main
-)
-gtest_discover_tests(shadps4_jpegdec_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-# ===========================================================================
-# AvPlayer buffering hysteresis (Driveclub attract video freeze)
-# ===========================================================================
-
-add_executable(shadps4_avplayer_buffering_test
-    libraries/test_avplayer_buffering.cpp
-)
-target_include_directories(shadps4_avplayer_buffering_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-)
-target_compile_features(shadps4_avplayer_buffering_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_avplayer_buffering_test PRIVATE
-    GTest::gtest_main
-)
-gtest_discover_tests(shadps4_avplayer_buffering_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-add_executable(shadps4_avplayer_path_test
-    libraries/test_avplayer_path.cpp
-)
-target_include_directories(shadps4_avplayer_path_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-)
-target_compile_features(shadps4_avplayer_path_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_avplayer_path_test PRIVATE
-    GTest::gtest_main
-)
-gtest_discover_tests(shadps4_avplayer_path_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-add_executable(shadps4_avplayer_read_test
-    libraries/test_avplayer_read.cpp
-)
-target_include_directories(shadps4_avplayer_read_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-)
-target_compile_features(shadps4_avplayer_read_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_avplayer_read_test PRIVATE
-    GTest::gtest_main
-)
-gtest_discover_tests(shadps4_avplayer_read_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-add_executable(shadps4_pm4_type0_test
-    video_core/test_pm4_type0.cpp
-)
-target_include_directories(shadps4_pm4_type0_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-)
-target_compile_features(shadps4_pm4_type0_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_pm4_type0_test PRIVATE
-    GTest::gtest_main
-)
-gtest_discover_tests(shadps4_pm4_type0_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-add_executable(shadps4_pm4_type1_test
-    video_core/test_pm4_type1.cpp
-)
-target_include_directories(shadps4_pm4_type1_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-)
-target_compile_features(shadps4_pm4_type1_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_pm4_type1_test PRIVATE
-    GTest::gtest_main
-)
-gtest_discover_tests(shadps4_pm4_type1_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-add_executable(shadps4_pm4_packet_test
-    video_core/test_pm4_packet.cpp
-)
-target_include_directories(shadps4_pm4_packet_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-)
-target_compile_features(shadps4_pm4_packet_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_pm4_packet_test PRIVATE
-    GTest::gtest_main
-)
-gtest_discover_tests(shadps4_pm4_packet_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-# ===========================================================================
-# FEX HLE stderr traces stay off unless BACHATA_FEX_HLE_TRACE is set
-# ===========================================================================
-
-add_executable(shadps4_hle_trace_test
-    core/test_hle_trace.cpp
-)
-target_include_directories(shadps4_hle_trace_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-)
-target_compile_features(shadps4_hle_trace_test PRIVATE cxx_std_23)
-target_link_libraries(shadps4_hle_trace_test PRIVATE
-    GTest::gtest_main
-)
-gtest_discover_tests(shadps4_hle_trace_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-# ===========================================================================
-# Memory patch selection seam (Milestone 1)
-# ===========================================================================
-
-set(MEMORY_PATCHER_TEST_SOURCES
+set(NET_LIB_TEST_SOURCES
     # Under test
-    ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_session.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_preset.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_repository.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
+    ${NET_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net_log.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net_p2p.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net_p2p_ioctl.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net_resolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net_translate.cpp
 
-    # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
+    # Logging and RegisterLib support
     ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
-
-    # Minimal common support
+    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
     ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
     ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
     ${CMAKE_SOURCE_DIR}/src/common/error.cpp
     ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logging/classes.cpp
     ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
 
     # Stubs that replace dependencies
     stubs/common_stub.cpp
-    stubs/core_stub.cpp
     stubs/scm_rev_stub.cpp
     stubs/sdl_stub.cpp
-
-    # Tests
-    common/test_memory_patcher.cpp
-)
-
-add_executable(shadps4_memory_patcher_test ${MEMORY_PATCHER_TEST_SOURCES})
-
-target_include_directories(shadps4_memory_patcher_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/tests
-)
-target_compile_features(shadps4_memory_patcher_test PRIVATE cxx_std_23)
-target_compile_definitions(shadps4_memory_patcher_test PRIVATE
-    BOOST_ASIO_STANDALONE
-    MEMORY_PATCHER_TEST_OBSERVER
-)
-
-target_link_libraries(shadps4_memory_patcher_test PRIVATE
-    GTest::gtest_main
-    fmt::fmt
-    nlohmann_json::nlohmann_json
-    pugixml::pugixml
-    SDL3::SDL3
-    spdlog::spdlog
-    toml11::toml11
-)
-
-list(APPEND TEST_TARGETS shadps4_memory_patcher_test)
-
-gtest_discover_tests(shadps4_memory_patcher_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-# ===========================================================================
-# Local repository v1 foundation (Milestone 2)
-# ===========================================================================
-
-set(PATCH_REPOSITORY_TEST_SOURCES
-    # Under test
-    ${CMAKE_SOURCE_DIR}/src/common/patch_repository.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_session.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_preset.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
-
-    # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
-
-    # Minimal common support
-    ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
-
-    # Stubs that replace dependencies
-    stubs/common_stub.cpp
+    stubs/loader_stub.cpp
     stubs/core_stub.cpp
-    stubs/scm_rev_stub.cpp
-    stubs/sdl_stub.cpp
-
-    # Tests
-    common/test_patch_repository.cpp
+    stubs/signals_stub.cpp
+    stubs/file_sys_stub.cpp
+    stubs/net_lib_kernel_stub.cpp
 )
 
-add_executable(shadps4_patch_repository_test ${PATCH_REPOSITORY_TEST_SOURCES})
+# Both targets below share this setup.
+function(add_net_lib_test target)
+    add_executable(${target} ${ARGN})
+    list(APPEND TEST_TARGETS ${target})
 
-target_include_directories(shadps4_patch_repository_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/tests
-)
-target_compile_features(shadps4_patch_repository_test PRIVATE cxx_std_23)
-target_compile_definitions(shadps4_patch_repository_test PRIVATE BOOST_ASIO_STANDALONE)
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_compile_features(${target} PRIVATE cxx_std_23)
+    target_compile_definitions(${target} PRIVATE BOOST_ASIO_STANDALONE)
+    target_link_libraries(${target} PRIVATE
+        GTest::gtest_main
+        fmt::fmt
+        magic_enum::magic_enum
+        nlohmann_json::nlohmann_json
+        toml11::toml11
+        SDL3::SDL3
+        spdlog::spdlog
+        ${NET_TEST_SSL_LIBS}
+    )
 
-target_link_libraries(shadps4_patch_repository_test PRIVATE
-    GTest::gtest_main
-    fmt::fmt
-    nlohmann_json::nlohmann_json
-    pugixml::pugixml
-    SDL3::SDL3
-    spdlog::spdlog
-    toml11::toml11
-)
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+        CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        include(CheckCXXSymbolExists)
+        check_cxx_symbol_exists(_LIBCPP_VERSION version LIBCPP)
+        if (LIBCPP)
+            target_compile_options(${target} PRIVATE -fexperimental-library)
+        endif()
+    endif()
 
-list(APPEND TEST_TARGETS shadps4_patch_repository_test)
+    if (WIN32)
+        target_link_libraries(${target} PRIVATE onecore ws2_32 wepoll)
+        target_compile_definitions(${target} PRIVATE
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+            NTDDI_VERSION=0x0A000006
+            _WIN32_WINNT=0x0A00
+            WINVER=0x0A00
+        )
+        if (MSVC)
+            target_compile_definitions(${target} PRIVATE
+                _CRT_SECURE_NO_WARNINGS
+                _CRT_NONSTDC_NO_DEPRECATE
+                _SCL_SECURE_NO_WARNINGS
+                _TIMESPEC_DEFINED
+            )
+        endif()
+    endif()
 
-gtest_discover_tests(shadps4_patch_repository_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
+    gtest_discover_tests(${target}
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        DISCOVERY_TIMEOUT 60
+        PROPERTIES TIMEOUT 300
+    )
+    set(TEST_TARGETS ${TEST_TARGETS} PARENT_SCOPE)
+endfunction()
 
-# ===========================================================================
-# Persistent per-game user state (Milestone 3)
-# ===========================================================================
-
-set(PATCH_STATE_TEST_SOURCES
-    # Under test
-    ${CMAKE_SOURCE_DIR}/src/common/patch_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_repository.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_session.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_preset.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
-
-    # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
-
-    # Minimal common support
-    ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
-
-    # Stubs that replace dependencies
-    stubs/common_stub.cpp
-    stubs/core_stub.cpp
-    stubs/scm_rev_stub.cpp
-    stubs/sdl_stub.cpp
-
-    # Tests
-    common/test_patch_state.cpp
-)
-
-add_executable(shadps4_patch_state_test ${PATCH_STATE_TEST_SOURCES})
-
-target_include_directories(shadps4_patch_state_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/tests
-)
-target_compile_features(shadps4_patch_state_test PRIVATE cxx_std_23)
-target_compile_definitions(shadps4_patch_state_test PRIVATE BOOST_ASIO_STANDALONE)
-
-target_link_libraries(shadps4_patch_state_test PRIVATE
-    GTest::gtest_main
-    fmt::fmt
-    nlohmann_json::nlohmann_json
-    pugixml::pugixml
-    SDL3::SDL3
-    spdlog::spdlog
-    toml11::toml11
+add_net_lib_test(shadps4_net_lib_test
+    ${NET_LIB_TEST_SOURCES}
+    network/test_net_lib.cpp
+    network/test_net_lib_p2p_ioctl.cpp
+    network/test_net_lib_translate.cpp
+    network/test_net_sample_sockets.cpp
 )
 
-list(APPEND TEST_TARGETS shadps4_patch_state_test)
-
-gtest_discover_tests(shadps4_patch_state_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
+# The kernel glue: net ids as kernel file descriptors, the BSD socket calls. The kernel's
+# errno and file table come from a stub; everything else is the real code.
+add_net_lib_test(shadps4_net_kernel_test
+    ${NET_LIB_TEST_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net_kernel.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net_upnp.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/libraries/net/net_util.cpp
+    stubs/net_kernel_stub.cpp
+    network/test_net_kernel.cpp
 )
-
-# ===========================================================================
-# Patch domain C ABI bridge (Milestone 4)
-# ===========================================================================
-
-set(PATCH_DOMAIN_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/common/patch_domain.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_repository.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_session.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_preset.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
-)
-
-# Executable exercising the C ABI directly (no JVM involved).
-add_executable(shadps4_patch_domain_test ${PATCH_DOMAIN_SOURCES}
-    stubs/patch_domain_stub.cpp
-    stubs/core_stub.cpp
-    stubs/sdl_stub.cpp
-    common/test_patch_domain.cpp
-)
-
-target_include_directories(shadps4_patch_domain_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/tests
-)
-target_compile_features(shadps4_patch_domain_test PRIVATE cxx_std_23)
-target_compile_definitions(shadps4_patch_domain_test PRIVATE BOOST_ASIO_STANDALONE)
-
-target_link_libraries(shadps4_patch_domain_test PRIVATE
-    GTest::gtest_main
-    fmt::fmt
-    nlohmann_json::nlohmann_json
-    pugixml::pugixml
-    SDL3::SDL3
-    spdlog::spdlog
-)
-
-list(APPEND TEST_TARGETS shadps4_patch_domain_test)
-
-gtest_discover_tests(shadps4_patch_domain_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-# Host shared library exposing the same JNI symbols the Android .so will use, so the Kotlin
-# end-to-end boundary test can drive the REAL native resolver from a JVM unit test.
-add_library(shadps4_patch_domain_shared SHARED ${PATCH_DOMAIN_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/common/patch_domain_jni.cpp
-    stubs/patch_domain_stub.cpp
-    stubs/core_stub.cpp
-    stubs/sdl_stub.cpp
-)
-set_target_properties(shadps4_patch_domain_shared PROPERTIES
-    OUTPUT_NAME bachata_patch_domain
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/patch_domain
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/patch_domain
-)
-target_include_directories(shadps4_patch_domain_shared PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/tests
-    /usr/lib/jvm/java-17-openjdk-amd64/include
-    /usr/lib/jvm/java-17-openjdk-amd64/include/linux
-)
-target_compile_features(shadps4_patch_domain_shared PRIVATE cxx_std_23)
-target_compile_definitions(shadps4_patch_domain_shared PRIVATE BOOST_ASIO_STANDALONE)
-target_link_libraries(shadps4_patch_domain_shared PRIVATE
-    fmt::fmt
-    nlohmann_json::nlohmann_json
-    pugixml::pugixml
-    SDL3::SDL3
-    spdlog::spdlog
-)
-
-# ===========================================================================
-# Managed launch session (Milestone 5)
-# ===========================================================================
-
-set(PATCH_SESSION_TEST_SOURCES
-    # Under test
-    ${CMAKE_SOURCE_DIR}/src/common/patch_session.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_preset.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_domain.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_repository.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
-
-    # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
-
-    # Minimal common support
-    ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
-
-    # Stubs that replace dependencies
-    stubs/common_stub.cpp
-    stubs/core_stub.cpp
-    stubs/scm_rev_stub.cpp
-    stubs/sdl_stub.cpp
-
-    # Tests
-    common/test_patch_session.cpp
-)
-
-add_executable(shadps4_patch_session_test ${PATCH_SESSION_TEST_SOURCES})
-
-target_include_directories(shadps4_patch_session_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/tests
-)
-target_compile_features(shadps4_patch_session_test PRIVATE cxx_std_23)
-target_compile_definitions(shadps4_patch_session_test PRIVATE
-    BOOST_ASIO_STANDALONE
-    MEMORY_PATCHER_TEST_OBSERVER
-)
-
-target_link_libraries(shadps4_patch_session_test PRIVATE
-    GTest::gtest_main
-    fmt::fmt
-    nlohmann_json::nlohmann_json
-    pugixml::pugixml
-    SDL3::SDL3
-    spdlog::spdlog
-    toml11::toml11
-)
-
-list(APPEND TEST_TARGETS shadps4_patch_session_test)
-
-gtest_discover_tests(shadps4_patch_session_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
-)
-
-# ===========================================================================
-# Preset resolution + Bloodborne local pilot (Milestone 6)
-# ===========================================================================
-
-set(PRESET_TEST_SOURCES
-    # Under test
-    ${CMAKE_SOURCE_DIR}/src/common/patch_preset.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_domain.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_repository.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/patch_session.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/memory_patcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/file_format/psf.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/io_file.cpp
-
-    # EmulatorState is used by OnGameLoaded(); EmulatorSettings is used by log.cpp.
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/emulator_settings.cpp
-
-    # Minimal common support
-    ${CMAKE_SOURCE_DIR}/src/common/path_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/assert.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/error.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/string_util.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/logging/log.cpp
-
-    # Stubs that replace dependencies
-    stubs/common_stub.cpp
-    stubs/core_stub.cpp
-    stubs/scm_rev_stub.cpp
-    stubs/sdl_stub.cpp
-
-    # Tests
-    common/test_patch_preset.cpp
-)
-
-add_executable(shadps4_preset_test ${PRESET_TEST_SOURCES})
-
-target_include_directories(shadps4_preset_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/tests
-)
-target_compile_features(shadps4_preset_test PRIVATE cxx_std_23)
-target_compile_definitions(shadps4_preset_test PRIVATE
-    BOOST_ASIO_STANDALONE
-    MEMORY_PATCHER_TEST_OBSERVER
-)
-
-target_link_libraries(shadps4_preset_test PRIVATE
-    GTest::gtest_main
-    fmt::fmt
-    nlohmann_json::nlohmann_json
-    pugixml::pugixml
-    SDL3::SDL3
-    spdlog::spdlog
-    toml11::toml11
-)
-
-list(APPEND TEST_TARGETS shadps4_preset_test)
-
-gtest_discover_tests(shadps4_preset_test
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DISCOVERY_TIMEOUT 60
+target_link_libraries(shadps4_net_kernel_test PRIVATE
+    tsl::robin_map         # fs.h
+    miniupnpc::miniupnpc   # UPnP forwarding of the P2P port
 )

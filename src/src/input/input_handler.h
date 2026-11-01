@@ -42,6 +42,7 @@
 #define SDL_EVENT_REMOVE_VIRTUAL_USER SDL_EVENT_USER + 12
 #define SDL_EVENT_RDOC_CAPTURE SDL_EVENT_USER + 13
 #define SDL_EVENT_SCREENSHOT_WITH_OVERLAYS SDL_EVENT_USER + 14
+#define SDL_EVENT_TOGGLE_FRIENDS SDL_EVENT_USER + 15
 
 #define LEFTJOYSTICK_HALFMODE 0x00010000
 #define RIGHTJOYSTICK_HALFMODE 0x00020000
@@ -65,6 +66,7 @@
 #define HOTKEY_REMOVE_VIRTUAL_USER 0xf000000d
 #define HOTKEY_SCREENSHOT_WITH_OVERLAYS 0xf000000e
 #define HOTKEY_OPEN_EMULATOR_SETTINGS 0xf000000f
+#define HOTKEY_TOGGLE_FRIENDS 0xf0000010
 
 #define SDL_UNMAPPED UINT32_MAX - 1
 
@@ -109,13 +111,14 @@ public:
 class InputEvent {
 public:
     InputID input;
-    bool active;
+    u8 active : 1;
+    u8 analog_source : 1;
     s8 axis_value;
 
     InputEvent(InputID i = InputID(), bool a = false, s8 v = 0)
-        : input(i), active(a), axis_value(v) {}
+        : input(i), active(a), axis_value(v), analog_source(false) {}
     InputEvent(InputType d, u32 i, bool a = false, s8 v = 0)
-        : input(d, i), active(a), axis_value(v) {}
+        : input(d, i), active(a), axis_value(v), analog_source(false) {}
 };
 
 // i strongly suggest you collapse these maps
@@ -172,6 +175,7 @@ const std::map<std::string, u32> string_to_hotkey_map = {
     {"hotkey_volume_up", HOTKEY_VOLUME_UP},
     {"hotkey_volume_down", HOTKEY_VOLUME_DOWN},
     {"hotkey_emulator_settings", HOTKEY_OPEN_EMULATOR_SETTINGS},
+    {"hotkey_toggle_friends", HOTKEY_TOGGLE_FRIENDS},
 };
 
 const std::map<std::string, AxisMapping> string_to_axis_map = {
@@ -391,7 +395,7 @@ public:
                 keys[2] = k2;
             } else {
                 keys[1] = k2;
-                keys[3] = k1;
+                keys[2] = k1;
             }
         }
     }
@@ -455,6 +459,7 @@ public:
     s16 old_param;
     s16* new_param;
     bool old_button_state, new_button_state, state_changed, positive_axis;
+    bool analog_source = false;
 
     ControllerOutput(const u32 b, u32 a = SDL_GAMEPAD_AXIS_INVALID, bool p = true) {
         button = b;
@@ -537,7 +542,7 @@ public:
 
 class ControllerAllOutputs {
 public:
-    static constexpr u64 output_count = 42;
+    static constexpr u64 output_count = 43;
     std::array<ControllerOutput, output_count> data = {
         // Important: these have to be the first, or else they will update in the wrong order
         ControllerOutput(LEFTJOYSTICK_HALFMODE),
@@ -591,6 +596,7 @@ public:
         ControllerOutput(HOTKEY_VOLUME_UP),
         ControllerOutput(HOTKEY_VOLUME_DOWN),
         ControllerOutput(HOTKEY_OPEN_EMULATOR_SETTINGS),
+        ControllerOutput(HOTKEY_TOGGLE_FRIENDS),
 
         ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_INVALID),
     };

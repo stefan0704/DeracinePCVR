@@ -142,7 +142,7 @@ class MemoryManager;
 class Module {
 public:
     explicit Module(Core::MemoryManager* memory, const std::filesystem::path& file,
-                    u32& max_tls_index);
+                    std::unique_ptr<Core::FileSys::IFile> handle, u32& max_tls_index, s32 id);
     ~Module();
 
     VAddr GetBaseAddress() const noexcept {
@@ -176,6 +176,11 @@ public:
     template <typename T = VAddr>
     T GetProcParam() const noexcept {
         return reinterpret_cast<T>(proc_param_virtual_addr);
+    }
+
+    template <typename T = VAddr>
+    T GetModuleParam() const noexcept {
+        return reinterpret_cast<T>(module_param_virtual_addr);
     }
 
     std::span<const ModuleInfo> GetImportModules() const {
@@ -217,6 +222,7 @@ public:
     void LoadSymbols();
 
     void* FindByName(std::string_view name);
+    void* FindByNid(std::string_view nid);
 
     OrbisKernelModuleInfoEx GetModuleInfoEx() const;
     const ModuleInfo* FindModule(std::string_view id);
@@ -227,9 +233,13 @@ public:
     std::filesystem::path file;
     std::string name;
     Loader::Elf elf;
+    s32 id{};
     u64 aligned_base_size{};
     VAddr base_virtual_addr{};
     VAddr proc_param_virtual_addr{};
+    VAddr module_param_virtual_addr{};
+    std::string interpreter_path{};
+    std::string comment{};
     VAddr eh_frame_hdr_addr{};
     VAddr eh_frame_addr{};
     u32 eh_frame_hdr_size{};

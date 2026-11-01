@@ -3,84 +3,115 @@
 
 #pragma once
 
-#include <atomic>
-
 #include "common/types.h"
 #include "shader_recompiler/ir/type.h"
 #include "video_core/amdgpu/resource.h"
 
-#include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 
 namespace Shader {
 
 static constexpr u32 NUM_USER_DATA_REGS = 16;
 static constexpr u32 NUM_IMAGES = 64;
-static constexpr u32 NUM_BUFFERS = 40;
-static constexpr u32 NUM_SAMPLERS = 32;
+static constexpr u32 NUM_BUFFERS = 56;
+static constexpr u32 NUM_SAMPLERS = 16;
 static constexpr u32 NUM_FMASKS = 8;
 
-enum class BufferType : u32 {
+using SharpLocation = u16;
+
+constexpr SharpLocation UNKNOWN_LOCATION = std::numeric_limits<u16>::max();
+
+template <typename T>
+struct SharpFetch {
+    static constexpr std::size_t N = sizeof(T) / sizeof(u32);
+    static_assert(N <= 8);
+
+    enum class Summary : u8 {
+        SingleLoad,
+        MultiLoad,
+        Invalid,
+    };
+
+    Summary summary{Summary::MultiLoad};
+    std::array<u32, N> immediates;
+    std::array<SharpLocation, N> offsets;
+    u8 load_mask;
+
+    bool operator==(const SharpFetch&) const = default;
+
+    template <u32 num_dwords = N>
+        requires(num_dwords <= N)
+    constexpr bool Fetch(const u32* flatbuf, T* out) const {
+        if (summary == Summary::SingleLoad) [[likely]] {
+            std::memcpy(out, flatbuf + offsets[0], num_dwords * sizeof(u32));
+            return true;
+        } else if (summary == Summary::Invalid) [[unlikely]] {
+            return false;
+        }
+        u8 mask = load_mask;
+        std::array<u32, num_dwords> out_dw;
+        for (u32 i = 0; i < num_dwords; i++) {
+            out_dw[i] = (mask & 1) ? flatbuf[offsets[i]] : immediates[i];
+            mask >>= 1;
+        }
+        std::memcpy(out, out_dw.data(), sizeof(out_dw));
+        return true;
+    }
+};
+
+enum class SharpFetchPostOp : u8 {
+    None,
+    // For buffers
+    BitwiseOrDw1WithImm,
+    OffsetByProgramBase,
+    ClearStrideAndBitshiftDw2WithImm,
+    // For images,
+    ConvertCubeTo2DArray,
+    // For samplers
+    DisableAnisoIfSingleLod,
+    ForceRepeatXyzClamp,
+    ForceLastTexelXyClamp,
+    ClearAnisoRatioAndThreshold,
+};
+
+enum class BufferType : u8 {
     Guest,
     Flatbuf,
     BdaPagetable,
     FaultBuffer,
     GdsBuffer,
     SharedMemory,
+    ClipPlanes,
 };
 
-struct Info;
-
-/// Read-only guest buffers no larger than this many bytes are uniform buffers in the shaders
-/// instead of storage buffers; 0 makes every buffer a storage buffer. The renderer sets it
-/// before each draw, so that a draw's shaders, pipeline layout and descriptors agree.
-/// (Adreno's driver can serve what shaders read from uniform buffers from its constant
-/// registers or constant cache; every read of a storage buffer goes to memory.)
-inline std::atomic<u32> uniform_buffer_limit{0};
-
 struct BufferResource {
-    u32 sharp_idx;
-    IR::Type used_types;
-    AmdGpu::Buffer inline_cbuf;
-    BufferType buffer_type;
-    u8 instance_attrib{};
+    SharpFetch<AmdGpu::Buffer> sharp_fetch{};
+    IR::Type used_types{};
+    BufferType buffer_type{};
     bool is_written{};
     bool is_formatted{};
-    bool used_as_readconst{};
+    SharpFetchPostOp post_op{};
+    u32 post_op_dw1_mask{};
+    u32 post_op_dw2_shift{};
 
     bool IsSpecial() const noexcept {
         return buffer_type != BufferType::Guest;
     }
 
-    bool IsStorage([[maybe_unused]] const AmdGpu::Buffer buffer) const noexcept {
-        // When using uniform buffers, a size is required at compilation time, so we need to
-        // either compile a lot of shader specializations to handle each size or just force it to
-        // the maximum possible size always. However, for some vendors the shader-supplied size is
-        // used for bounds checking uniform buffer accesses, so the latter would effectively turn
-        // off buffer robustness behavior. Instead, force storage buffers which are bounds checked
-        // using the actual buffer size, unless the renderer asks for uniform buffers where they
-        // may be (uniform_buffer_limit).
-        // (Only by what a slot is, never by where its buffer lies or how long it is to the byte:
-        // a slot whose kind changed from draw to draw would make another permutation of the
-        // shader each time. Where a uniform buffer lies and how it ends is the business of
-        // BufferCache::ObtainUniformBuffer.)
-        const u32 limit = uniform_buffer_limit.load(std::memory_order_relaxed);
-        return limit == 0 || is_written || buffer_type != BufferType::Guest ||
-               buffer.GetSize() > limit;
-    }
-
     constexpr AmdGpu::Buffer GetSharp(const auto& info) const noexcept {
-        AmdGpu::Buffer buffer{};
-        if (inline_cbuf) {
-            buffer = inline_cbuf;
-            if (inline_cbuf.base_address != 1) {
-                buffer.base_address += info.pgm_base; // address fixup
-            }
-        } else {
-            buffer = info.template ReadUdSharp<AmdGpu::Buffer>(sharp_idx);
+        AmdGpu::Buffer buffer;
+        if (!sharp_fetch.Fetch(info.flattened_ud_buf.data(), &buffer)) {
+            return AmdGpu::Buffer::Null();
+        }
+        if (post_op == SharpFetchPostOp::BitwiseOrDw1WithImm) {
+            reinterpret_cast<u32*>(&buffer)[1] |= post_op_dw1_mask;
+        } else if (post_op == SharpFetchPostOp::ClearStrideAndBitshiftDw2WithImm) {
+            buffer.stride = 0;
+            buffer.num_records <<= post_op_dw2_shift;
+        } else if (post_op == SharpFetchPostOp::OffsetByProgramBase) {
+            buffer.base_address += info.pgm_base;
         }
         if (!buffer.Valid()) {
-            LOG_DEBUG(Render, "Encountered invalid buffer sharp");
             return AmdGpu::Buffer::Null();
         }
         return buffer;
@@ -88,55 +119,55 @@ struct BufferResource {
 };
 using BufferResourceList = boost::container::static_vector<BufferResource, NUM_BUFFERS>;
 
-enum class MipStorageFallbackMode : u32 { None, DynamicIndex, ConstantIndex };
+enum class MipStorageFallbackMode : u16 {
+    None,
+    DynamicIndex,
+    ConstantIndex,
+};
 
 struct ImageResource {
-    static constexpr f32 Hosted2DSampleY = 0.5f;
-    static constexpr u32 Hosted2DIntegerY = 0u;
-
-    u32 sharp_idx;
+    SharpFetch<AmdGpu::Image> sharp_fetch{};
     bool is_depth{};
     bool is_atomic{};
     bool is_array{};
     bool is_written{};
     bool is_r128{};
+    u8 constant_mip_index{};
     MipStorageFallbackMode mip_fallback_mode{};
-    u32 constant_mip_index{};
-
-    bool Is1DHostedAs2D(const AmdGpu::Image& sharp) const noexcept {
-        return !is_array && !is_written && !is_depth && !is_atomic && !is_r128 &&
-               sharp.GetType() == AmdGpu::ImageType::Color1D && sharp.height == 0 &&
-               sharp.NumLayers() == 1 && sharp.NumLevels() == 1 && sharp.NumSamples() == 1 &&
-               sharp.GetTileMode() == AmdGpu::TileMode::Thin2DThin;
-    }
-
-    AmdGpu::ImageType GetHostViewType(const AmdGpu::Image& sharp) const noexcept {
-        return Is1DHostedAs2D(sharp) ? AmdGpu::ImageType::Color2D
-                                    : sharp.GetViewType(is_array);
-    }
+    SharpFetchPostOp post_op{};
 
     constexpr AmdGpu::Image GetSharp(const auto& info) const noexcept {
         AmdGpu::Image image{};
-        if (!is_r128) {
-            image = info.template ReadUdSharp<AmdGpu::Image>(sharp_idx);
-        } else {
-            const auto raw = info.template ReadUdSharp<u128>(sharp_idx);
-            std::memcpy(&image, &raw, sizeof(raw));
-            image.pitch = image.width;
+        if (!Fetch(info.flattened_ud_buf.data(), &image)) {
+            return AmdGpu::Image::Null(is_depth);
+        }
+        if (post_op == SharpFetchPostOp::ConvertCubeTo2DArray) {
+            image.type = u64(AmdGpu::ImageType::Color2DArray);
+            image.depth = (image.depth + 1) * 6 - 1;
         }
         if (!image.Valid()) {
-            LOG_DEBUG(Render_Vulkan, "Encountered invalid image sharp");
             image = AmdGpu::Image::Null(is_depth);
         } else if (is_depth) {
             const auto data_fmt = image.GetDataFmt();
             if (data_fmt != AmdGpu::DataFormat::Format16 &&
                 data_fmt != AmdGpu::DataFormat::Format32) {
-                LOG_DEBUG(Render_Vulkan,
-                          "Encountered non-depth image used with depth instruction!");
                 image = AmdGpu::Image::Null(true);
             }
         }
         return image;
+    }
+
+    constexpr bool Fetch(const u32* flatbuf, AmdGpu::Image* out) const {
+        if (!is_r128) {
+            // Fetch full 8 byte T#
+            return sharp_fetch.Fetch(flatbuf, out);
+        }
+        // Fetch r128 T# and fix pitch
+        if (!sharp_fetch.Fetch<4>(flatbuf, out)) {
+            return false;
+        }
+        out->pitch = out->width;
+        return true;
     }
 
     u32 NumBindings(const auto& info) const {
@@ -146,24 +177,41 @@ struct ImageResource {
                    : 1;
     }
 };
-using ImageResourceList = boost::container::small_vector<ImageResource, NUM_IMAGES>;
+using ImageResourceList = boost::container::static_vector<ImageResource, NUM_IMAGES>;
 
 struct SamplerResource {
-    u32 sharp_idx;
-    AmdGpu::Sampler inline_sampler;
-    u32 is_inline_sampler : 1;
-    u32 associated_image : 4;
-    u32 disable_aniso : 1;
+    SharpFetch<AmdGpu::Sampler> sharp_fetch{};
+    SharpFetchPostOp post_op{};
+    SharpLocation post_op_tsharp_dw3_off{};
+    bool is_depth{};
 
     constexpr AmdGpu::Sampler GetSharp(const auto& info) const noexcept {
-        return is_inline_sampler ? inline_sampler
-                                 : info.template ReadUdSharp<AmdGpu::Sampler>(sharp_idx);
+        AmdGpu::Sampler sampler{};
+        sharp_fetch.Fetch(info.flattened_ud_buf.data(), &sampler);
+        if (post_op == SharpFetchPostOp::DisableAnisoIfSingleLod) {
+            const u32 tsharp_dw3 = info.flattened_ud_buf[post_op_tsharp_dw3_off];
+            if (((tsharp_dw3 >> 12) & 0xff) == 0) {
+                sampler.max_aniso.Assign(AmdGpu::AnisoRatio::One);
+            }
+        } else if (post_op == SharpFetchPostOp::ForceRepeatXyzClamp) {
+            sampler.clamp_x.Assign(AmdGpu::ClampMode::Wrap);
+            sampler.clamp_y.Assign(AmdGpu::ClampMode::Wrap);
+            sampler.clamp_z.Assign(AmdGpu::ClampMode::Wrap);
+        } else if (post_op == SharpFetchPostOp::ForceLastTexelXyClamp) {
+            sampler.clamp_x.Assign(AmdGpu::ClampMode::ClampLastTexel);
+            sampler.clamp_y.Assign(AmdGpu::ClampMode::ClampLastTexel);
+            sampler.clamp_z.Assign(AmdGpu::ClampMode::Wrap);
+        } else if (post_op == SharpFetchPostOp::ClearAnisoRatioAndThreshold) {
+            sampler.max_aniso.Assign(AmdGpu::AnisoRatio::One);
+            sampler.aniso_threshold.Assign(0);
+        }
+        return sampler;
     }
 };
-using SamplerResourceList = boost::container::small_vector<SamplerResource, NUM_SAMPLERS>;
+using SamplerResourceList = boost::container::static_vector<SamplerResource, NUM_SAMPLERS>;
 
 struct FMaskResource {
-    u32 sharp_idx;
+    SharpLocation sharp_idx;
 
     constexpr AmdGpu::Image GetSharp(const auto& info) const noexcept {
         return info.template ReadUdSharp<AmdGpu::Image>(sharp_idx);
@@ -176,14 +224,12 @@ struct PushData {
     static constexpr u32 YOffsetIndex = 1;
     static constexpr u32 XScaleIndex = 2;
     static constexpr u32 YScaleIndex = 3;
-    static constexpr u32 UdRegsIndex = 4;
-    static constexpr u32 BufOffsetIndex = UdRegsIndex + NUM_USER_DATA_REGS / 4;
+    static constexpr u32 BufOffsetIndex = 4;
 
     float xoffset;
     float yoffset;
     float xscale;
     float yscale;
-    std::array<u32, NUM_USER_DATA_REGS> ud_regs;
     std::array<u8, NUM_BUFFERS> buf_offsets;
 
     void AddOffset(u32 binding, u32 offset) {

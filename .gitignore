@@ -18,6 +18,7 @@ build/
 bin/
 *.obj
 *.exe.stackdump
+_vr_backup/
 
 # Ignore third-party submodule source trees (fetched via git submodules or CMake)
 src/externals/*
@@ -27,7 +28,6 @@ src/externals/*
 !src/externals/gcn/
 !src/externals/renderdoc/
 !src/externals/stb/
-!src/externals/LibAtrac9/
 !src/externals/aacdec/
 src/externals/aacdec/*
 !src/externals/aacdec/CMakeLists.txt

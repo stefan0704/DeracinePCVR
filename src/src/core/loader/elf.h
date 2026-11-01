@@ -9,6 +9,7 @@
 
 #include "common/io_file.h"
 #include "common/types.h"
+#include "core/file_sys/ifile.h"
 
 struct self_header {
     static constexpr u32 signature = 0x1D3D154Fu;
@@ -466,6 +467,7 @@ public:
     ~Elf();
 
     void Open(const std::filesystem::path& file_name);
+    void Open(std::unique_ptr<Core::FileSys::IFile> handle);
     bool IsSelfFile() const;
     bool IsElfFile() const;
 
@@ -501,6 +503,7 @@ public:
     std::string ElfPheaderFlagsStr(u32 flags);
 
     void LoadSegment(u64 virtual_addr, u64 file_offset, u64 size);
+    bool TryLoadSegment(u64 virtual_addr, u64 file_offset, u64 size);
     bool IsSharedLib();
     void ElfHeaderDebugDump(const std::filesystem::path& file_name);
     void SelfHeaderDebugDump(const std::filesystem::path& file_name);
@@ -508,7 +511,7 @@ public:
     void PHeaderDebugDump(const std::filesystem::path& file_name);
 
 private:
-    Common::FS::IOFile m_f{};
+    Core::FileSys::FileReader m_f{};
     bool is_self{};
     self_header m_self{};
     std::vector<self_segment_header> m_self_segments;

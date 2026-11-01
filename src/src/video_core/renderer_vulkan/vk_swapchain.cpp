@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
-#include <atomic>
 #include <limits>
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -23,32 +22,17 @@ static constexpr vk::SurfaceFormatKHR SURFACE_FORMAT_HDR = {
 };
 
 Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& window_)
-    : instance{instance_}, window{window_},
-      headless{window_.GetWindowInfo().type == Frontend::WindowSystemType::Headless},
-      surface{headless ? vk::SurfaceKHR{} : CreateSurface(instance.GetInstance(), window)} {
-    if (headless) {
-        surface_format = {vk::Format::eR8G8B8A8Unorm, vk::ColorSpaceKHR::eSrgbNonlinear};
-        present_mode = vk::PresentModeKHR::eFifo;
-    } else {
-        std::fprintf(stderr, "BACHATA_SWAPCHAIN_FORMAT_ENTER\n");
-        FindPresentFormat();
-        std::fprintf(stderr, "BACHATA_SWAPCHAIN_FORMAT_READY\n");
-        FindPresentMode();
-        std::fprintf(stderr, "BACHATA_SWAPCHAIN_MODE_READY\n");
-    }
+    : instance{instance_}, window{window_}, surface{CreateSurface(instance.GetInstance(), window)} {
+    FindPresentFormat();
+    FindPresentMode();
 
     Create(window.GetWidth(), window.GetHeight());
-    std::fprintf(stderr, "BACHATA_SWAPCHAIN_READY\n");
-    std::fprintf(stderr, "BACHATA_IMGUI_ENTER\n");
     ImGui::Core::Initialize(instance, window, image_count, surface_format.format);
-    std::fprintf(stderr, "BACHATA_IMGUI_READY\n");
 }
 
 Swapchain::~Swapchain() {
     Destroy();
-    if (surface) {
-        instance.GetInstance().destroySurfaceKHR(surface);
-    }
+    instance.GetInstance().destroySurfaceKHR(surface);
 }
 
 void Swapchain::Create(u32 width_, u32 height_) {
@@ -57,12 +41,6 @@ void Swapchain::Create(u32 width_, u32 height_) {
     needs_recreation = false;
 
     Destroy();
-
-    if (headless) {
-        CreateHeadlessImages();
-        RefreshSemaphores();
-        return;
-    }
 
     SetSurfaceProperties();
 
@@ -128,11 +106,6 @@ void Swapchain::SetHDR(bool hdr) {
 }
 
 bool Swapchain::AcquireNextImage() {
-    if (headless) {
-        image_index = (image_index + 1) % image_count;
-        return true;
-    }
-
     vk::Device device = instance.GetDevice();
     vk::Result result =
         device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
@@ -147,23 +120,6 @@ bool Swapchain::AcquireNextImage() {
     case vk::Result::eErrorUnknown:
         needs_recreation = true;
         break;
-    case vk::Result::eErrorDeviceLost:
-        // Mali/Vortek can report device-lost after heavy first-frame GPU work. Do not
-        // UNREACHABLE (exit 133); mark for recreation and let Present skip the frame so
-        // session logs flush and the Android layer can observe a clean stop.
-        LOG_CRITICAL(Render_Vulkan, "Swapchain acquire returned ErrorDeviceLost");
-        {
-            // Client-side gate; server dumps alloc map via present_sync / GpuTrack.
-            static std::atomic<bool> device_lost_snapshot_logged{false};
-            if (!device_lost_snapshot_logged.exchange(true)) {
-                LOG_CRITICAL(Render_Vulkan,
-                             "DEVICE_LOST_SNAPSHOT where=AcquireNextImage frame_index={} "
-                             "image_count={} image_index={} (server dump: Bachata.Vortek.GpuTrack)",
-                             frame_index, image_count, image_index);
-            }
-        }
-        needs_recreation = true;
-        break;
     default:
         LOG_CRITICAL(Render_Vulkan, "Swapchain acquire returned unknown result {}",
                      vk::to_string(result));
@@ -175,11 +131,6 @@ bool Swapchain::AcquireNextImage() {
 }
 
 bool Swapchain::Present() {
-    if (headless) {
-        frame_index = (frame_index + 1) % image_count;
-        return true;
-    }
-
     const vk::PresentInfoKHR present_info = {
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &present_ready[image_index],
@@ -189,18 +140,7 @@ bool Swapchain::Present() {
     };
 
     auto result = instance.GetPresentQueue().presentKHR(present_info);
-    if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR ||
-        result == vk::Result::eErrorDeviceLost || result == vk::Result::eErrorSurfaceLostKHR) {
-        if (result == vk::Result::eErrorDeviceLost) {
-            LOG_CRITICAL(Render_Vulkan, "Swapchain present returned ErrorDeviceLost");
-            static std::atomic<bool> device_lost_snapshot_logged{false};
-            if (!device_lost_snapshot_logged.exchange(true)) {
-                LOG_CRITICAL(Render_Vulkan,
-                             "DEVICE_LOST_SNAPSHOT where=QueuePresent frame_index={} "
-                             "image_count={} image_index={} (server dump: Bachata.Vortek.GpuTrack)",
-                             frame_index, image_count, image_index);
-            }
-        }
+    if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
         needs_recreation = true;
     } else {
         ASSERT_MSG(result == vk::Result::eSuccess, "Swapchain presentation failed: {}",
@@ -281,10 +221,7 @@ void Swapchain::FindPresentMode() {
                     vk::to_string(present_mode), vk::to_string(fallback));
         present_mode = fallback;
     }
-
 #ifdef ENABLE_OPENXR_HOST
-    // With a headset of the machine's own to show frames in, the window only gets a look at
-    // them: it must never hold the thread that shows them up until the monitor's next refresh.
     if (Core::Vr::OpenXrHost::Instance().IsAvailable() &&
         present_mode != vk::PresentModeKHR::eMailbox &&
         present_mode != vk::PresentModeKHR::eImmediate) {
@@ -350,16 +287,6 @@ void Swapchain::Destroy() {
     if (swapchain) {
         device.destroySwapchainKHR(swapchain);
     }
-    if (headless) {
-        for (const vk::Image image : images) {
-            device.destroyImage(image);
-        }
-        for (const vk::DeviceMemory memory : headless_memory) {
-            device.freeMemory(memory);
-        }
-        images.clear();
-        headless_memory.clear();
-    }
 
     for (const auto& sem : image_acquired) {
         device.destroySemaphore(sem);
@@ -403,60 +330,6 @@ void Swapchain::SetupImages() {
     ASSERT_MSG(images_result == vk::Result::eSuccess, "Failed to create swapchain images: {}",
                vk::to_string(images_result));
     images = std::move(imgs);
-    CreateImageViews();
-}
-
-void Swapchain::CreateHeadlessImages() {
-    static constexpr u32 NumImages = 3;
-
-    const vk::Device device = instance.GetDevice();
-    const auto memory_properties = instance.GetPhysicalDevice().getMemoryProperties();
-    extent = vk::Extent2D{width, height};
-
-    for (u32 i = 0; i < NumImages; ++i) {
-        const auto [image_result, image] = device.createImage(vk::ImageCreateInfo{
-            .imageType = vk::ImageType::e2D,
-            .format = surface_format.format,
-            .extent = {width, height, 1},
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = vk::SampleCountFlagBits::e1,
-            .usage = vk::ImageUsageFlagBits::eColorAttachment |
-                     vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
-        });
-        ASSERT_MSG(image_result == vk::Result::eSuccess, "Failed to create headless image: {}",
-                   vk::to_string(image_result));
-
-        const auto requirements = device.getImageMemoryRequirements(image);
-        u32 memory_type = memory_properties.memoryTypeCount;
-        for (u32 type = 0; type < memory_properties.memoryTypeCount; ++type) {
-            if ((requirements.memoryTypeBits & (1u << type)) != 0 &&
-                (memory_properties.memoryTypes[type].propertyFlags &
-                 vk::MemoryPropertyFlagBits::eDeviceLocal)) {
-                memory_type = type;
-                break;
-            }
-        }
-        ASSERT_MSG(memory_type != memory_properties.memoryTypeCount,
-                   "No memory type for headless images");
-        const auto [memory_result, memory] = device.allocateMemory(vk::MemoryAllocateInfo{
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = memory_type,
-        });
-        ASSERT_MSG(memory_result == vk::Result::eSuccess,
-                   "Failed to allocate headless image memory: {}", vk::to_string(memory_result));
-        const auto bind_result = device.bindImageMemory(image, memory, 0);
-        ASSERT_MSG(bind_result == vk::Result::eSuccess, "Failed to bind headless image memory: {}",
-                   vk::to_string(bind_result));
-
-        images.push_back(image);
-        headless_memory.push_back(memory);
-    }
-    CreateImageViews();
-}
-
-void Swapchain::CreateImageViews() {
-    const vk::Device device = instance.GetDevice();
     image_count = static_cast<u32>(images.size());
     images_view.resize(image_count);
     for (u32 i = 0; i < image_count; ++i) {
