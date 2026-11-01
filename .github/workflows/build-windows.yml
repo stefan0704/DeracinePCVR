@@ -2,7 +2,7 @@ name: Build Windows PCVR
 
 on:
   push:
-    branches: [ main, master, optimizacion-graficos ]
+    branches: [ main, master, optimizacion-graficos, actualizacion-v0.21.0 ]
     paths:
       - 'src/**'
       - 'tools/**'
