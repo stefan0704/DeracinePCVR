@@ -13,6 +13,8 @@
 namespace Vulkan {
 class Instance;
 class Frame;
+class Semaphore;
+using MasterSemaphore = Semaphore;
 }
 
 namespace Vulkan::HostPasses {
@@ -36,7 +38,7 @@ public:
         float centre_radius = 0.0f;
     };
 
-    void Create(const Instance& instance, MasterSemaphore* master_semaphore,
+    void Create(const Instance& instance, Semaphore* work_semaphore,
                 vk::Format surface_format);
 
     /// An input image and the part of the output frame it is drawn into.

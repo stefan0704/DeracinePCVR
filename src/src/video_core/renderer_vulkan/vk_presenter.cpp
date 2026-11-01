@@ -778,15 +778,14 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     fsr_settings.rcas_attenuation =
         static_cast<float>(EmulatorSettings.GetRcasAttenuation() / 1000.f);
 
-    fsr_pass.Create(instance, draw_scheduler.GetMasterSemaphore(), device,
-                    instance.GetAllocator(), num_images);
-    pp_pass.Create(instance, draw_scheduler.GetMasterSemaphore(),
+    fsr_pass.Create(device, instance.GetAllocator(), num_images);
+    pp_pass.Create(instance, draw_scheduler.GetWorkSemaphore(),
                    swapchain.GetSurfaceFormat().format);
     vr_exporter = std::make_unique<VrExporter>(instance, draw_scheduler);
 #ifdef ENABLE_OPENXR_HOST
     if (vr_exporter->HasLocalHost()) {
         // The machine has a headset of its own: its session is made on this device.
-        hmd_pp_pass.Create(instance, draw_scheduler.GetMasterSemaphore(),
+        hmd_pp_pass.Create(instance, draw_scheduler.GetWorkSemaphore(),
                            Core::Vr::OpenXrHost::FrameFormat);
         Core::Vr::OpenXrHost::Instance().Start({
             .instance = instance.GetInstance(),
@@ -795,7 +794,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
             .queue = instance.GetXrQueue(),
             .queue_family = instance.GetGraphicsQueueFamilyIndex(),
             .queue_index = instance.GetXrQueueIndex(),
-            .title_timeline = draw_scheduler.GetMasterSemaphore()->Handle(),
+            .title_timeline = draw_scheduler.GetWorkSemaphore()->Handle(),
         });
     }
 #endif
@@ -971,8 +970,8 @@ Frame* Presenter::PrepareLastFrame() {
     });
 
     // Flush frame creation commands.
-    frame->ready_timeline = scheduler.GetMasterSemaphore();
-    frame->ready_semaphore = scheduler.GetMasterSemaphore()->Handle();
+    frame->ready_timeline = scheduler.GetWorkSemaphore();
+    frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
     scheduler.Flush(info);
@@ -1094,8 +1093,8 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
 
     // Flush frame creation commands.
-    frame->ready_timeline = draw_scheduler.GetMasterSemaphore();
-    frame->ready_semaphore = draw_scheduler.GetMasterSemaphore()->Handle();
+    frame->ready_timeline = draw_scheduler.GetWorkSemaphore();
+    frame->ready_semaphore = draw_scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = draw_scheduler.CurrentTick();
     SubmitInfo info{};
     draw_scheduler.Flush(info);
@@ -1525,8 +1524,8 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     // Flush frame creation commands.
     for (Frame* target : {frame, local}) {
         if (target != nullptr) {
-            target->ready_timeline = draw_scheduler.GetMasterSemaphore();
-            target->ready_semaphore = draw_scheduler.GetMasterSemaphore()->Handle();
+            target->ready_timeline = draw_scheduler.GetWorkSemaphore();
+            target->ready_semaphore = draw_scheduler.GetWorkSemaphore()->Handle();
             target->ready_tick = draw_scheduler.CurrentTick();
         }
     }
@@ -1878,8 +1877,8 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     });
 
     // Flush frame creation commands.
-    frame->ready_timeline = scheduler.GetMasterSemaphore();
-    frame->ready_semaphore = scheduler.GetMasterSemaphore()->Handle();
+    frame->ready_timeline = scheduler.GetWorkSemaphore();
+    frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
     scheduler.Flush(info);

@@ -408,7 +408,7 @@ void VrExporter::Deliver(Frame* frame, const Core::Vr::PresentedFrame& info) {
     if (IsLocal(frame)) {
 #ifdef ENABLE_OPENXR_HOST
         // The host copies the image as soon as it hears about the frame.
-        scheduler.GetMasterSemaphore()->Wait(frame->ready_tick);
+        scheduler.GetWorkSemaphore()->Wait(frame->ready_tick);
         Core::Vr::OpenXrHost::Instance().EndFrame(static_cast<u32>(frame->host_buffer), info,
                                                   frame->ready_tick);
 #endif
@@ -417,7 +417,7 @@ void VrExporter::Deliver(Frame* frame, const Core::Vr::PresentedFrame& info) {
     Slot& slot = *slots[frame->host_buffer];
 
     // The host samples the buffer as soon as it hears about the frame.
-    scheduler.GetMasterSemaphore()->Wait(frame->ready_tick);
+    scheduler.GetWorkSemaphore()->Wait(frame->ready_tick);
 
 #ifdef __linux__
     if (slot.readback) {

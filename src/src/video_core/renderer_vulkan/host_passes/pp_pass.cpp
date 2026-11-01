@@ -16,11 +16,11 @@
 
 namespace Vulkan::HostPasses {
 
-void PostProcessingPass::Create(const Instance& instance, MasterSemaphore* master_semaphore,
+void PostProcessingPass::Create(const Instance& instance, Semaphore* work_semaphore,
                                 const vk::Format surface_format) {
     device = instance.GetDevice();
     uses_push_descriptors = instance.IsPushDescriptorSupported();
-    desc_heap = DescriptorHeap{instance, master_semaphore, pool_sizes, 64};
+    desc_heap = DescriptorHeap{instance, work_semaphore, pool_sizes, 64};
     static const std::array pp_shaders{
         HostShaders::FS_TRI_VERT,
         HostShaders::POST_PROCESS_FRAG,
