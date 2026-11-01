@@ -53,4 +53,6 @@ protected:
     std::atomic<u64> current_tick{1}; ///< Current logical tick.
 };
 
+using MasterSemaphore = Semaphore;
+
 } // namespace Vulkan

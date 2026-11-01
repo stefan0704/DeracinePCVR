@@ -427,6 +427,9 @@ public:
     [[nodiscard]] Semaphore* GetWorkSemaphore() noexcept {
         return &work_semaphore;
     }
+    [[nodiscard]] Semaphore* GetMasterSemaphore() noexcept {
+        return &work_semaphore;
+    }
 
     /// Defers an operation until the gpu has reached the current cpu tick.
     /// Will be run when submitting or calling PopPendingOperations.
