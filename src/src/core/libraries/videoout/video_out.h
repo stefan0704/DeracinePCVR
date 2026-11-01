@@ -165,8 +165,7 @@ struct HmdFrame {
 };
 
 // Internal system functions
-s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void** unk,
-                             u32 flip_token);
+s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void** unk);
 /// Queues a frame for the headset, the way the reprojection scans one out on real hardware.
 s32 SubmitHmdFrame(s32 handle, const HmdFrame& frame);
 
