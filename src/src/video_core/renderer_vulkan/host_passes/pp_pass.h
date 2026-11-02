@@ -78,7 +78,7 @@ private:
     static constexpr std::array<vk::DescriptorPoolSize, 1> pool_sizes{{
         {vk::DescriptorType::eCombinedImageSampler, 64},
     }};
-    DescriptorHeap desc_heap;
+    std::optional<DescriptorHeap> desc_heap;
     vk::UniquePipeline pipeline{};
     vk::UniquePipeline overlay_pipeline{};
     vk::UniquePipelineLayout pipeline_layout{};

@@ -53,6 +53,17 @@ public:
     void DispatchDirect();
     void DispatchIndirect(VAddr address, u32 offset, u32 size);
 
+    static void StartDrawTrace([[maybe_unused]] s32 count) {}
+    static bool DrawTraceActive() {
+        return false;
+    }
+    [[nodiscard]] bool EyesUpscaled() const {
+        return false;
+    }
+    [[nodiscard]] float UpscaledRadius() const {
+        return 0.0f;
+    }
+
     void ScopeMarker(fmt::string_view fmt, fmt::format_args args, auto&& func) {
         if (host_markers_enabled) {
             ScopeMarkerBegin(fmt::vformat(fmt, args));

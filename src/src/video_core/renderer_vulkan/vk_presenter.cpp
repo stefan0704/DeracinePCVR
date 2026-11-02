@@ -38,6 +38,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -147,17 +148,18 @@ struct ScreenshotReadback {
     vk::Format format{};
     bool hdr_encoded{};
 
-    ScreenshotReadback(const Instance& instance, Scheduler& scheduler, ScreenshotKind kind_,
+    ScreenshotReadback(const Instance& instance, ScreenshotKind kind_,
                        std::vector<std::filesystem::path> paths_, const u32 width_,
                        const u32 height_, const vk::Format format_, const bool hdr_encoded_)
         : kind{kind_}, paths{std::move(paths_)},
-          buffer{instance,
-                 scheduler,
-                 VideoCore::MemoryUsage::Download,
-                 0,
-                 vk::BufferUsageFlagBits::eTransferDst,
-                 static_cast<u64>(width_) * static_cast<u64>(height_) * 4},
+          buffer{instance, 0, static_cast<u64>(width_) * static_cast<u64>(height_) * 4,
+                 VideoCore::MemoryType::HostCached},
           width{width_}, height{height_}, format{format_}, hdr_encoded{hdr_encoded_} {}
+
+    ScreenshotReadback(const Instance& instance, Scheduler&, ScreenshotKind kind_,
+                       std::vector<std::filesystem::path> paths_, const u32 width_,
+                       const u32 height_, const vk::Format format_, const bool hdr_encoded_)
+        : ScreenshotReadback(instance, kind_, std::move(paths_), width_, height_, format_, hdr_encoded_) {}
 };
 
 static std::string SanitizeFilenameComponent(std::string value) {
@@ -757,7 +759,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                EmulatorSettings.IsVkCrashDiagnosticEnabled()},
       draw_scheduler{instance}, present_scheduler{instance}, flip_scheduler{instance},
       swapchain{instance, window},
-      rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, liverpool)},
+      runtime{instance, draw_scheduler},
+      rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
     const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
@@ -1047,7 +1050,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     VideoCore::ImageViewInfo view_info{};
     view_info.format = GetFrameViewFormat(attribute.attrib.pixel_format);
     // Exclude alpha from output frame to avoid blending with UI.
-    view_info.mapping.a = vk::ComponentSwizzle::eOne;
+    view_info.mapping.a = AmdGpu::CompSwizzle::One;
 
     auto& image = texture_cache.GetImage(image_id);
     auto image_view = *image.FindView(view_info).image_view;
@@ -1067,15 +1070,17 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         auto& readback = pending_screenshots.back();
 
         // Capture the guest output before any host-side scaling (FSR/PP) is applied.
-        image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
-                      cmdbuf);
+        runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
+        runtime.FlushBarriers();
         CopyImageToReadback(cmdbuf, image.GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                             readback);
     }
 
     // Continue with host-side passes that draw the displayed (scaled) frame.
-    image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead, {},
-                  cmdbuf);
+    runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                    vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
+    runtime.FlushBarriers();
 
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
                                  fsr_settings, frame->is_hdr);
@@ -1316,7 +1321,7 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     for (u32 eye = 0; eye < 2; ++eye) {
         auto view_info = descs[eye].view_info;
         // Exclude alpha from output frame to avoid blending with UI.
-        view_info.mapping.a = vk::ComponentSwizzle::eOne;
+        view_info.mapping.a = AmdGpu::CompSwizzle::One;
         if (encoded_in) {
             view_info.format = encoded_sibling(view_info.format);
         }
@@ -1326,25 +1331,28 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         auto& image = texture_cache.GetImage(image_ids[eye]);
         eye_views[eye] = *image.FindView(view_info).image_view;
         if (eye_scan) {
-            image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
-                          {}, cmdbuf);
+            runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal,
+                            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
+            runtime.FlushBarriers();
             eye_scan->emplace_back(instance, draw_scheduler, ScreenshotKind::GameOnly,
                                    std::vector<std::filesystem::path>{}, image.info.size.width,
                                    image.info.size.height, image.info.pixel_format, false);
             CopyImageToReadback(cmdbuf, image.GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                                 eye_scan->back());
         }
-        image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead,
-                      {}, cmdbuf);
+        runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
+        runtime.FlushBarriers();
     }
     if (has_overlay) {
         for (u32 eye = 0; eye < 2; ++eye) {
             auto view_info = overlay_descs[eye].view_info;
-            view_info.mapping.a = vk::ComponentSwizzle::eIdentity;
+            view_info.mapping.a = AmdGpu::CompSwizzle::Alpha;
             auto& ov_image = texture_cache.GetImage(overlay_image_ids[eye]);
             overlay_views[eye] = *ov_image.FindView(view_info).image_view;
-            ov_image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
-                             vk::AccessFlagBits2::eShaderRead, {}, cmdbuf);
+            runtime.Transit(&ov_image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                            vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
+            runtime.FlushBarriers();
         }
     }
     // Left eye on the left half, right eye on the right half.
@@ -1754,16 +1762,12 @@ void Presenter::DumpGpuImages(std::string_view folder) {
             const u32 units_w = block ? (w + 3) / 4 : w;
             const u32 units_h = block ? (h + 3) / 4 : h;
             const u64 bytes = u64{units_w} * units_h * unit * info.resources.layers;
-            VideoCore::Buffer buffer{instance,
-                                     draw_scheduler,
-                                     VideoCore::MemoryUsage::Download,
-                                     0,
-                                     vk::BufferUsageFlagBits::eTransferDst,
-                                     bytes};
+            VideoCore::Buffer buffer{instance, 0, bytes, VideoCore::MemoryType::HostCached};
             draw_scheduler.EndRendering();
             const auto cmdbuf = draw_scheduler.CommandBuffer();
-            image->Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
-                           {}, cmdbuf);
+            runtime.Transit(image, vk::ImageLayout::eTransferSrcOptimal,
+                            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
+            runtime.FlushBarriers();
             const vk::BufferImageCopy region = {
                 .bufferOffset = 0,
                 .bufferRowLength = 0,
