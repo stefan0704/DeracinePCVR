@@ -289,16 +289,6 @@ void VideoOutDriver::Flip(const Request& req) {
     presenter->SetHDR(req.port->is_hdr);
 
     // Tell the host which pose this frame belongs to before it can see the image.
-    using Clock = std::chrono::steady_clock;
-    using Vulkan::FrameStats;
-    const auto taken = Clock::now();
-    const auto note_flip = [&] {
-        if (req.is_hmd && req.started != Clock::time_point{}) {
-            const auto now = Clock::now();
-            FrameStats::Time(FrameStats::Stage::GpuWait, now - taken);
-            FrameStats::Time(FrameStats::Stage::Latency, now - req.started);
-        }
-    };
     if (req.is_hmd) {
         Core::Vr::Runtime::Instance().NotifyFramePresented(req.hmd_frame);
         // The machine's own headset gets its picture first; the window's is a look at it.
