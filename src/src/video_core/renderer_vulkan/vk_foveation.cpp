@@ -93,7 +93,7 @@ vk::ImageView Foveation::MapFor(u32 width, u32 height) {
     if (level == 0 || width == 0 || height == 0) {
         return {};
     }
-    const int wanted = level > 1 && FrameStats::AbOff("fov") ? level - 1 : level;
+    const int wanted = level;
     for (const Map& map : maps) {
         if (map.width == width && map.height == height && map.level == wanted) {
             return map.view;

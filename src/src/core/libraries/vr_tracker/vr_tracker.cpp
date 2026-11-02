@@ -470,7 +470,6 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         OrbisVrTrackerHmdRearTrackingStatus::ORBIS_VR_TRACKER_REAR_TRACKING_READY;
     hmd.sensor_read_system_timestamp = now;
 
-    Core::KnownTitle::NoteView(state.pose.position);
     return ORBIS_OK;
 }
 

@@ -271,8 +271,7 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, std::span<const Region
         }
     }
     // (Under the A/B measuring aid as "ppcopy", the frame is cleared all the same.)
-    const bool covers = !overlap && covered == s64{frame.width} * frame.height &&
-                        !FrameStats::AbOff("ppcopy");
+    const bool covers = !overlap && covered == s64{frame.width} * frame.height;
     const std::array<vk::RenderingAttachmentInfo, 1> attachments{{
         {
             .imageView = frame.image_view,

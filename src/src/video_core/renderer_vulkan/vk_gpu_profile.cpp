@@ -197,7 +197,7 @@ void GpuProfile::TakeFrame() {
         std::chrono::steady_clock::now() - last_profile >=
             std::chrono::duration<double>(ProfileInterval())) {
         state = State::Recording;
-        recorded_b = FrameStats::AbOff("eye2") || FrameStats::AbOff();
+        recorded_b = false;
         records.reserve(MaxQueries / 2);
         for (size_t i = 0; i < HostWorkKinds; ++i) {
             g_host_count[i].store(0, std::memory_order_relaxed);
