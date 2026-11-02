@@ -15,7 +15,6 @@
 #include "platform/bachata/runtime_client.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
-#include "core/known_title.h"
 #include "core/libraries/hmd/hmd.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/videoout/driver.h"

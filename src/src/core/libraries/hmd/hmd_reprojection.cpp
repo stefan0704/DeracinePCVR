@@ -5,7 +5,6 @@
 #include <mutex>
 
 #include "common/logging/log.h"
-#include "core/guest_cpu/guest_watchdog.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/hmd/hmd.h"
 #include "core/libraries/hmd/hmd_error.h"
