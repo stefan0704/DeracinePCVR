@@ -1296,8 +1296,7 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     const u32 src_image_width = is_sbs ? (eye_width * 2) : eye_width;
     bool encoded_in = pp_settings.gamma == 1.0f && pp_settings.hdr == 0 && !spectator &&
                       pixel_for_pixel(frame) && pixel_for_pixel(local) &&
-                      right_info.size.width == src_image_width && right_info.size.height == eye_height &&
-                      !FrameStats::AbOff("ppcopy");
+                      right_info.size.width == src_image_width && right_info.size.height == eye_height;
     for (u32 eye = 0; eye < 2 && encoded_in; ++eye) {
         const vk::Format sibling = encoded_sibling(descs[eye].view_info.format);
         encoded_in = sibling != vk::Format::eUndefined &&
@@ -1888,9 +1887,6 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     static std::atomic_uint32_t present_traces{};
     const u32 trace_id = present_traces.fetch_add(1, std::memory_order_relaxed);
-    if (!is_reusing_frame) {
-        FrameStats::EndFrame();
-    }
 
     // Bachata diagnostics: dump the guest output buffer every N presents when
     // the file <UserDir>/auto_shot_every exists (device black-screen triage;

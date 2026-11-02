@@ -13,6 +13,11 @@
 
 namespace Vulkan {
 
+struct FrameStats {
+    static constexpr bool AbOff(const char* = nullptr) noexcept { return false; }
+    static void EndFrame() noexcept {}
+};
+
 class Instance;
 class Scheduler;
 
@@ -109,3 +114,5 @@ private:
 };
 
 } // namespace Vulkan
+
+using FrameStats = Vulkan::FrameStats;

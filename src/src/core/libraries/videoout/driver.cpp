@@ -298,9 +298,6 @@ void VideoOutDriver::Flip(const Request& req) {
         // A VR host shows the frame itself, there is nothing to put on the window.
         if (req.frame == nullptr || presenter->DeliverHmdFrame(req.frame, req.hmd_frame)) {
             Platform::Bachata::ReportPresentedFrame();
-            note_flip();
-            // (Frames that are put on a window are counted where that is done.)
-            FrameStats::EndFrame();
             FinishFlip(req.port, req.index, req.flip_arg, req.eop, req.lock_generation);
             return;
         }
@@ -308,7 +305,6 @@ void VideoOutDriver::Flip(const Request& req) {
 
     // Present the frame.
     presenter->Present(req.frame);
-    note_flip();
     Platform::Bachata::ReportPresentedFrame();
     if (present_traces.load(std::memory_order_relaxed) <= 32) {
         LOG_INFO(Lib_VideoOut, "BACHATA_FLIP_TRACE stage=present_returned index={} arg={}",
@@ -443,7 +439,7 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
     if (!frame) {
         // GpuComm was inside a graphics task; waiting on the present fence
         // would stall PM4. Retry after the current task yields.
-        liverpool->EnqueueCommand([=, this] {
+        liverpool->SendCommand([=, this] {
             SubmitFlipInternal(port, index, flip_arg, is_eop, lock_generation);
         });
         return;
@@ -489,11 +485,8 @@ bool VideoOutDriver::SubmitHmdFrame(VideoOutPort* port, const HmdFrame& hmd_fram
     HmdFrame frame = hmd_frame;
     frame.render_pose = Core::Vr::Runtime::Instance().ToHostSpace(hmd_frame.render_pose);
     const u32 frame_id = Core::Vr::Runtime::Instance().NextFrameId();
-    const auto started = Vulkan::FrameStats::TakeGuestSubmit();
-    const auto handed_over = std::chrono::steady_clock::now();
-    if (started != std::chrono::steady_clock::time_point{}) {
-        Vulkan::FrameStats::Time(Vulkan::FrameStats::Stage::Submitting, handed_over - started);
-    }
+    const auto started = std::chrono::steady_clock::now();
+    const auto handed_over = started;
     liverpool->SendCommand([=, this]() {
         SubmitHmdFrameInternal(port, frame, frame_id, started, handed_over);
     });
@@ -510,29 +503,12 @@ void VideoOutDriver::SubmitHmdFrameInternal(VideoOutPort* port, const HmdFrame& 
         presenter->PrepareHmdFrame(hmd_frame, frame_id, eye_width, eye_height);
     if (!frames) {
         // Same as regular flips: retry once the current graphics task yields.
-        liverpool->EnqueueCommand([=, this] {
+        liverpool->SendCommand([=, this] {
             SubmitHmdFrameInternal(port, hmd_frame, frame_id, started, handed_over);
         });
         return;
     }
-    Vulkan::FrameStats::Time(Vulkan::FrameStats::Stage::CatchUp,
-                             std::chrono::steady_clock::now() - handed_over);
     Vulkan::GpuProfile::NoteFrameDone();
-    Vulkan::FrameStats::NoteHmdFrame();
-
-    {
-        // This runs on the GPU thread, once per frame: what it has used of the processor
-        // since the last time is what the frame cost it. (The choice of how many refreshes a
-        // frame is given goes by it too.)
-        static std::chrono::nanoseconds last_thread_time{};
-        const auto thread_time = Vulkan::FrameStats::ThreadTime();
-        if (last_thread_time.count() != 0) {
-            Vulkan::FrameStats::Time(Vulkan::FrameStats::Stage::Translate,
-                                     thread_time - last_thread_time);
-            Vulkan::FrameStats::NoteGpuThreadFrame(thread_time - last_thread_time);
-        }
-        last_thread_time = thread_time;
-    }
 
     std::scoped_lock lock{mutex};
     requests.push({
@@ -757,16 +733,15 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         }
         return {};
     };
-    const auto flip_hmd_frame = [this, &refresh_clock](const Request& request) {
-        const auto now = std::chrono::steady_clock::now();
-        Vulkan::FrameStats::Time(Vulkan::FrameStats::Stage::Queued, now - request.prepared);
-        Flip(request);
-        refresh_clock.NoteDelivery(now, Core::KnownTitle::FramePace());
-        FRAME_END;
-    };
-
     // How many refreshes of the display two of the headset's last.
     u32 pace = 2;
+
+    const auto flip_hmd_frame = [this, &refresh_clock, &pace](const Request& request) {
+        const auto now = std::chrono::steady_clock::now();
+        Flip(request);
+        refresh_clock.NoteDelivery(now, pace);
+        FRAME_END;
+    };
 
     while (!token.stop_requested()) {
         timer.Start();
@@ -780,18 +755,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         if (early_flips) {
             if (const auto request = receive_finished_hmd_frame()) {
                 flip_hmd_frame(request);
-            }
-            // Eight looks a refresh is also often enough to tell how busy the GPU is.
-            Vulkan::FrameStats::GpuLook(presenter->IsGpuBusy());
-            // A title that takes more than two refreshes of the display for a frame is on a
-            // pace of its own: its frames are shown for two refreshes or for three as they
-            // happen to fall, and what moves in the picture moves in jerks. Where it is known
-            // how many refreshes a frame should be given (Core::KnownTitle::FramePace), the
-            // headset refreshes that much more slowly instead: the title, which takes two
-            // refreshes of the headset for a frame, then takes that many of the display.
-            // (A title nothing is known about takes its two refreshes for a frame.)
-            if (const u32 wanted = Core::KnownTitle::FramePace(); wanted != 0) {
-                pace = wanted;
             }
             if (!refresh_clock.IsRefresh(std::chrono::steady_clock::now(), pace)) {
                 timer.End();
@@ -826,8 +789,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 }
                 if (request.is_hmd) {
                     const auto now = std::chrono::steady_clock::now();
-                    Vulkan::FrameStats::Time(Vulkan::FrameStats::Stage::Queued,
-                                             now - request.prepared);
                     refresh_clock.NoteDelivery(now, pace);
                 }
                 Flip(request);
