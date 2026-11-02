@@ -725,13 +725,11 @@ set(VR_LIBS  src/core/libraries/hmd/hmd.cpp
              src/core/libraries/hmd/hmd_setup_dialog.h
              src/core/libraries/vr_tracker/vr_tracker.cpp
              src/core/libraries/vr_tracker/vr_tracker.h
-)
-
-set(VR_LIBS   src/core/vr/vr_host_link.cpp
-              src/core/vr/vr_host_link.h
-              src/core/vr/vr_protocol.h
-              src/core/vr/vr_runtime.cpp
-              src/core/vr/vr_runtime.h
+             src/core/vr/vr_host_link.cpp
+             src/core/vr/vr_host_link.h
+             src/core/vr/vr_protocol.h
+             src/core/vr/vr_runtime.cpp
+             src/core/vr/vr_runtime.h
 )
 if (ENABLE_OPENXR)
     list(APPEND VR_LIBS src/core/vr/openxr_host.cpp
