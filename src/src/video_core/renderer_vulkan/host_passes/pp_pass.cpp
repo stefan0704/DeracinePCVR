@@ -19,12 +19,8 @@ namespace Vulkan::HostPasses {
 void PostProcessingPass::Create(const Instance& instance, Semaphore* work_semaphore,
                                 const vk::Format surface_format) {
     device = instance.GetDevice();
-    uses_push_descriptors = instance.IsPushDescriptorSupported();
+    uses_push_descriptors = instance.MaxPushDescriptors() > 0;
     desc_heap.emplace(instance, work_semaphore, pool_sizes, 64);
-    static const std::array pp_shaders{
-        HostShaders::FS_TRI_VERT,
-        HostShaders::POST_PROCESS_FRAG,
-    };
 
     boost::container::static_vector<vk::DescriptorSetLayoutBinding, 2> bindings{
         {
@@ -53,11 +49,11 @@ void PostProcessingPass::Create(const Instance& instance, Semaphore* work_semaph
         .size = sizeof(Settings),
     };
 
-    const auto& vs_module = Compile(pp_shaders[0], vk::ShaderStageFlagBits::eVertex, device);
+    const auto vs_module = CompileSPV(FS_TRI_VERT, device);
     ASSERT(vs_module);
     SetObjectName(device, vs_module, "fs_tri.vert");
 
-    const auto& fs_module = Compile(pp_shaders[1], vk::ShaderStageFlagBits::eFragment, device);
+    const auto fs_module = CompileSPV(POST_PROCESS_FRAG, device);
     ASSERT(fs_module);
     SetObjectName(device, fs_module, "post_process.frag");
 
