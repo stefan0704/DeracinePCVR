@@ -438,5 +438,32 @@ In `src/src/core/vr/openxr_host.cpp`:
 11. [x] **Branch Isolation (`optimizacion-graficos`)**: Clean branch established for graphics and rendering polish.
 12. [x] **Fix Face Glitches**: Relaxed readbacks (`readbacks_mode: 1`).
 13. [x] **Fix Loading Screen Double Vision**: Asymmetric `FovFromUv` in `sceHmdReprojectionStart2dVr`.
-14. [ ] **In-Headset Verification**: Verify loading screen shows a single centered cinema display and character faces have no black cutouts.
+14. [x] **In-Headset Verification**: Verify loading screen shows a single centered cinema display and character faces have no black cutouts.
+15. [x] **Upgrade to shadPS4 v0.21.0 ("Until Mavethee Dawn")**: Completed CI Run `41464795210`, all VR libraries and Vulkan synchronization updated, deployed to `pc-vr/shadps4.exe`.
+16. [ ] **In-Headset Verification of v0.21.0**: Test gameplay, Vulkan presentation, OpenXR tracking, and PS Move 6DoF controls with the updated base emulator.
+
+---
+
+## 16. Step 15 Completed: Upgrade to shadPS4 v0.21.0 ("Until Mavethee Dawn")
+
+> Full handoff documentation: See [HANDOFF_V0.21.0.md](file:///e:/DeracinePCVR/HANDOFF_V0.21.0.md) and [AGENTS.md](file:///e:/DeracinePCVR/AGENTS.md).
+
+### 16.1 Target & Branch Isolation
+- Dedicated branch: `actualizacion-v0.21.0`. The `optimizacion-graficos` branch remains untouched.
+- Rebased / adapted all OpenXR VR layers and Déraciné PS Move 6DoF patches on top of upstream shadPS4 `v0.21.0`.
+
+### 16.2 Key Code Adaptations
+1. **CMake VR Libraries (`src/CMakeLists.txt`)**: Unified `VR_LIBS` to prevent symbol collision that previously dropped HMD and VR Tracker object files.
+2. **Vulkan Presenter (`vk_presenter.cpp`)**:
+   - Switched from deprecated `Download` to `HostCached`.
+   - Replaced direct image transitions with `runtime.Transit` and `FlushBarriers()`.
+   - Updated component swizzle to `AmdGpu::CompSwizzle`.
+   - Updated splash screen decoding to `ElfInfo::GetSplashData()` + `RefCountedTexture::DecodePngTexture`.
+   - Stubbed debug/tracing functions removed in upstream (`DumpGpuImages`, `TraceSync`, `StartDrawTrace`).
+3. **Liverpool Synchronization (`liverpool.h`, `liverpool.cpp`)**: Restored `IsGpuThread()`, `InGfxTask()`, and atomic `in_gfx_task` protection to ensure present fences do not deadlock between rendering and presentation threads.
+4. **Post-Processing Pass (`pp_pass.cpp`)**: Updated `IsPushDescriptorSupported` to `instance.MaxPushDescriptors() > 0` and enabled `CompileSPV` for host shaders.
+5. **GpuProfile Stub (`vk_gpu_profile.h`)**: Inlined `NoteFrameDone() {}` stub to satisfy linker references.
+6. **Watchdog Cleanup (`hmd_reprojection.cpp`)**: Removed obsolete Android watchdog calls to `Core::GuestCpu::NoteGuestProgress()`.
+7. **CI & Artifact Handling (`tools/download-artifact.py`)**: Resolved Azure Blob Storage HTTP 401 error caused by forwarding GitHub Bearer tokens on HTTP 302 redirects.
+
 
