@@ -1178,6 +1178,7 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/amdgpu/regs_texture.h
                src/video_core/amdgpu/regs_vertex.h
                src/video_core/amdgpu/resource.h
+               src/video_core/amdgpu/stall_log.h
                src/video_core/amdgpu/tiling.cpp
                src/video_core/amdgpu/tiling.h
                src/video_core/buffer_cache/buffer.cpp
