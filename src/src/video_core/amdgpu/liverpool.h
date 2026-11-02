@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <coroutine>
 #include <exception>
@@ -95,6 +96,14 @@ public:
 
     void BindRasterizer(Vulkan::Rasterizer* rasterizer_) {
         rasterizer = rasterizer_;
+    }
+
+    bool IsGpuThread() const {
+        return std::this_thread::get_id() == gpu_id;
+    }
+
+    bool InGfxTask() const {
+        return in_gfx_task.load(std::memory_order_relaxed);
     }
 
     template <bool wait_done = false>
@@ -240,6 +249,7 @@ private:
 #ifdef __linux__
     u32 gpu_tid;
 #endif
+    std::atomic<bool> in_gfx_task{false};
     s32 curr_qid{-1};
 };
 
