@@ -63,6 +63,10 @@ struct UniqueImage {
 
     void Create(const vk::ImageCreateInfo& image_ci);
 
+    bool AllowsViewFormat([[maybe_unused]] vk::Format format) const {
+        return true;
+    }
+
     void Destroy();
 
     operator vk::Image() const {

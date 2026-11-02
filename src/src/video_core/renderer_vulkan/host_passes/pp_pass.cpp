@@ -20,7 +20,7 @@ void PostProcessingPass::Create(const Instance& instance, Semaphore* work_semaph
                                 const vk::Format surface_format) {
     device = instance.GetDevice();
     uses_push_descriptors = instance.IsPushDescriptorSupported();
-    desc_heap = DescriptorHeap{instance, work_semaphore, pool_sizes, 64};
+    desc_heap.emplace(instance, work_semaphore, pool_sizes, 64);
     static const std::array pp_shaders{
         HostShaders::FS_TRI_VERT,
         HostShaders::POST_PROCESS_FRAG,
@@ -305,7 +305,7 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, std::span<const Region
                 .imageView = region.input,
                 .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
             };
-            const auto desc_set = desc_heap.Commit(*desc_set_layout);
+            const auto desc_set = desc_heap->Commit(*desc_set_layout);
             device.updateDescriptorSets(
                 vk::WriteDescriptorSet{
                     .dstSet = desc_set,
@@ -470,7 +470,7 @@ void PostProcessingPass::RenderOverlay(vk::CommandBuffer cmdbuf, std::span<const
                 .imageView = region.input,
                 .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
             };
-            const auto desc_set = desc_heap.Commit(*desc_set_layout);
+            const auto desc_set = desc_heap->Commit(*desc_set_layout);
             device.updateDescriptorSets(
                 vk::WriteDescriptorSet{
                     .dstSet = desc_set,
