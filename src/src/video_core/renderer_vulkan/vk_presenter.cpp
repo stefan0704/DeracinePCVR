@@ -53,6 +53,12 @@
 
 namespace Vulkan {
 
+static inline bool IsSyncTraceEnabled() {
+    return false;
+}
+
+static inline void TraceSync([[maybe_unused]] const char* format, ...) {}
+
 bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format format) {
     const vk::FormatProperties props{physical_device.getFormatProperties(format)};
     return static_cast<bool>(props.optimalTilingFeatures & vk::FormatFeatureFlagBits::eBlitDst);
@@ -1559,257 +1565,7 @@ bool Presenter::DeliverHmdFrame(Frame* frame, const Core::Vr::PresentedFrame& in
     return true;
 }
 
-void Presenter::DumpGpuImages(std::string_view folder) {
-    // SHADPS4_DUMP_WIDTH=<pixels>: how wide the pictures are at most (640 unless told; the
-    // targets' own width for looking at what is in a pixel).
-    static const u32 ThumbWidth = [] {
-        const char* value = std::getenv("SHADPS4_DUMP_WIDTH");
-        const int width = value != nullptr ? std::atoi(value) : 0;
-        return width >= 64 ? static_cast<u32>(width) : 640u;
-    }();
-    const auto dump_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / folder;
-    std::error_code ec;
-    std::filesystem::remove_all(dump_dir, ec);
-    std::filesystem::create_directories(dump_dir, ec);
-
-    // Collect first: transitions and submits below must not run under the cache lock.
-    std::vector<VideoCore::Image*> images;
-    texture_cache.ForEachImage([&](VideoCore::Image& image) {
-        const auto& info = image.info;
-        LOG_INFO(Render_Vulkan,
-                 "cache image at {:#x}: {}x{}x{}, {}, samples {}, levels {}, layers {}, flags {:#x}{}",
-                 info.guest_address, info.size.width, info.size.height, info.size.depth,
-                 vk::to_string(info.pixel_format), info.num_samples, info.resources.levels,
-                 info.resources.layers, static_cast<u32>(image.flags),
-                 info.props.is_depth ? ", depth" : "");
-        if (!(image.flags & VideoCore::ImageFlagBits::GpuModified) || info.props.is_depth ||
-            info.props.is_volume || info.size.width < 64 || info.size.height < 64) {
-            return;
-        }
-        images.push_back(&image);
-    });
-
-    const vk::Device device = instance.GetDevice();
-    u32 index = 0;
-    for (VideoCore::Image* image : images) {
-        const auto& info = image->info;
-        const u32 width = std::min(info.size.width, ThumbWidth);
-        const u32 height = std::max(1u, info.size.height * width / info.size.width);
-
-        const vk::ImageCreateInfo thumb_ci = {
-            .imageType = vk::ImageType::e2D,
-            .format = vk::Format::eR8G8B8A8Unorm,
-            .extent = {width, height, 1},
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = vk::SampleCountFlagBits::e1,
-            .usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
-        };
-        const VmaAllocationCreateInfo alloc_info = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        VkImage thumb_handle{};
-        VmaAllocation thumb_allocation{};
-        const VkImageCreateInfo thumb_ci_raw = static_cast<VkImageCreateInfo>(thumb_ci);
-        if (vmaCreateImage(instance.GetAllocator(), &thumb_ci_raw, &alloc_info, &thumb_handle,
-                           &thumb_allocation, nullptr) != VK_SUCCESS) {
-            LOG_ERROR(Render_Vulkan, "Could not allocate a thumbnail for the render target dump");
-            return;
-        }
-        const vk::Image thumb{thumb_handle};
-
-        ScreenshotReadback readback{instance,
-                                    draw_scheduler,
-                                    ScreenshotKind::GameOnly,
-                                    {},
-                                    width,
-                                    height,
-                                    vk::Format::eR8G8B8A8Unorm,
-                                    false};
-
-        draw_scheduler.EndRendering();
-        const auto cmdbuf = draw_scheduler.CommandBuffer();
-        const vk::ImageSubresourceRange color_range = {
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .levelCount = 1,
-            .layerCount = 1,
-        };
-        const auto thumb_barrier = [&](vk::ImageLayout from, vk::ImageLayout to) {
-            const vk::ImageMemoryBarrier barrier = {
-                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                .oldLayout = from,
-                .newLayout = to,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = thumb,
-                .subresourceRange = color_range,
-            };
-            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                   vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
-        };
-
-        image->Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
-                       cmdbuf);
-
-        // Multisampled targets cannot be blitted, they are resolved into a scratch image first.
-        const u32 samples = static_cast<u32>(image->backing->image.image_ci.samples);
-        vk::Image blit_source = image->GetImage();
-        VkImage resolved_handle{};
-        VmaAllocation resolved_allocation{};
-        if (samples > 1) {
-            const vk::ImageCreateInfo resolved_ci = {
-                .imageType = vk::ImageType::e2D,
-                .format = info.pixel_format,
-                .extent = {info.size.width, info.size.height, 1},
-                .mipLevels = 1,
-                .arrayLayers = 1,
-                .samples = vk::SampleCountFlagBits::e1,
-                .usage = vk::ImageUsageFlagBits::eTransferDst |
-                         vk::ImageUsageFlagBits::eTransferSrc |
-                         vk::ImageUsageFlagBits::eColorAttachment,
-            };
-            const VkImageCreateInfo resolved_ci_raw = static_cast<VkImageCreateInfo>(resolved_ci);
-            if (vmaCreateImage(instance.GetAllocator(), &resolved_ci_raw, &alloc_info,
-                               &resolved_handle, &resolved_allocation, nullptr) != VK_SUCCESS) {
-                vmaDestroyImage(instance.GetAllocator(), thumb_handle, thumb_allocation);
-                continue;
-            }
-            const vk::Image resolved{resolved_handle};
-            const auto resolved_barrier = [&](vk::ImageLayout from, vk::ImageLayout to) {
-                const vk::ImageMemoryBarrier barrier = {
-                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                    .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                    .oldLayout = from,
-                    .newLayout = to,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = resolved,
-                    .subresourceRange = color_range,
-                };
-                cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                       vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
-                                       barrier);
-            };
-            resolved_barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
-            cmdbuf.resolveImage(image->GetImage(), vk::ImageLayout::eTransferSrcOptimal, resolved,
-                                vk::ImageLayout::eTransferDstOptimal,
-                                vk::ImageResolve{
-                                    .srcSubresource = MakeImageSubresourceLayers(),
-                                    .dstSubresource = MakeImageSubresourceLayers(),
-                                    .extent = {info.size.width, info.size.height, 1},
-                                });
-            resolved_barrier(vk::ImageLayout::eTransferDstOptimal,
-                             vk::ImageLayout::eTransferSrcOptimal);
-            blit_source = resolved;
-        }
-
-        thumb_barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
-        cmdbuf.blitImage(blit_source, vk::ImageLayout::eTransferSrcOptimal, thumb,
-                         vk::ImageLayout::eTransferDstOptimal,
-                         MakeImageBlitStretch(info.size.width, info.size.height, width, height),
-                         vk::Filter::eLinear);
-        thumb_barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal);
-        CopyImageToReadback(cmdbuf, thumb, vk::ImageLayout::eTransferSrcOptimal, readback);
-        draw_scheduler.Finish();
-
-        std::vector<u8> rgba(static_cast<size_t>(width) * height * 4);
-        std::memcpy(rgba.data(), readback.buffer.mapped_data.data(), rgba.size());
-        for (size_t i = 3; i < rgba.size(); i += 4) {
-            rgba[i] = 0xff;
-        }
-        const auto path = dump_dir / fmt::format("{:03}_{:x}_{}x{}_{}_s{}.png", index++,
-                                                 info.guest_address, info.size.width,
-                                                 info.size.height,
-                                                 vk::to_string(info.pixel_format), samples);
-        WritePng(path, rgba, width, height);
-        vmaDestroyImage(instance.GetAllocator(), thumb_handle, thumb_allocation);
-        if (resolved_handle) {
-            vmaDestroyImage(instance.GetAllocator(), resolved_handle, resolved_allocation);
-        }
-    }
-    LOG_INFO(Render_Vulkan, "Dumped {} render targets to {}", index, dump_dir.string());
-
-    // SHADPS4_DUMP_IMAGE=<address>: the texture at that address as it is held, every level with
-    // all its layers, raw (rt_dump/image_<address>_level<n>_<w>x<h>x<layers>_<format>.bin): for
-    // what the pictures above leave out, textures the game only reads.
-    const char* wanted_text = std::getenv("SHADPS4_DUMP_IMAGE");
-    if (wanted_text == nullptr) {
-        return;
-    }
-    // (Several addresses may be given, apart by commas.)
-    std::vector<VAddr> wanted_list;
-    for (const char* at = wanted_text; *at != '\0';) {
-        char* end = nullptr;
-        wanted_list.push_back(std::strtoull(at, &end, 16));
-        if (end == at) {
-            break;
-        }
-        at = *end == ',' ? end + 1 : end;
-    }
-    std::vector<VideoCore::Image*> raw_images;
-    texture_cache.ForEachImage([&](VideoCore::Image& image) {
-        if (std::ranges::find(wanted_list, image.info.guest_address) != wanted_list.end() &&
-            image.info.num_samples == 1) {
-            raw_images.push_back(&image);
-        }
-    });
-    for (VideoCore::Image* image : raw_images) {
-        const auto& info = image->info;
-        const bool block = info.props.is_block;
-        const u32 unit = info.num_bits / 8; // bytes a pixel, or a block of 4x4 for compressed
-        for (u32 level = 0; level < info.resources.levels; ++level) {
-            const u32 w = std::max(info.size.width >> level, 1u);
-            const u32 h = std::max(info.size.height >> level, 1u);
-            const u32 units_w = block ? (w + 3) / 4 : w;
-            const u32 units_h = block ? (h + 3) / 4 : h;
-            const u64 bytes = u64{units_w} * units_h * unit * info.resources.layers;
-            VideoCore::Buffer buffer{instance, 0, bytes, VideoCore::MemoryType::HostCached};
-            draw_scheduler.EndRendering();
-            const auto cmdbuf = draw_scheduler.CommandBuffer();
-            runtime.Transit(image, vk::ImageLayout::eTransferSrcOptimal,
-                            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
-            runtime.FlushBarriers();
-            const vk::BufferImageCopy region = {
-                .bufferOffset = 0,
-                .bufferRowLength = 0,
-                .bufferImageHeight = 0,
-                .imageSubresource =
-                    {
-                        .aspectMask = info.props.is_depth ? vk::ImageAspectFlagBits::eDepth
-                                                          : vk::ImageAspectFlagBits::eColor,
-                        .mipLevel = level,
-                        .baseArrayLayer = 0,
-                        .layerCount = info.resources.layers,
-                    },
-                .imageOffset = {0, 0, 0},
-                .imageExtent = {w, h, 1},
-            };
-            cmdbuf.copyImageToBuffer(image->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
-                                     buffer.Handle(), region);
-            draw_scheduler.Finish();
-            const auto path =
-                dump_dir / fmt::format("image_{:x}_level{}_{}x{}x{}_{}.bin", info.guest_address,
-                                       level, w, h, info.resources.layers,
-                                       vk::to_string(info.pixel_format));
-            std::ofstream out{path, std::ios::binary};
-            out.write(reinterpret_cast<const char*>(buffer.mapped_data.data()),
-                      static_cast<std::streamsize>(bytes));
-        }
-        // And what the game's memory holds there, for comparison.
-        {
-            const auto path = dump_dir / fmt::format("image_{:x}_guest_{:x}_tile{}.bin",
-                                                     info.guest_address, info.guest_size,
-                                                     static_cast<u32>(info.tile_mode));
-            std::ofstream out{path, std::ios::binary};
-            out.write(reinterpret_cast<const char*>(info.guest_address),
-                      static_cast<std::streamsize>(info.guest_size));
-        }
-        LOG_INFO(Render_Vulkan,
-                 "Dumped the texture at {:#x}: {} levels, {} layers, tile mode {}, {} bytes in "
-                 "memory, flags {:#x}",
-                 info.guest_address, info.resources.levels, info.resources.layers,
-                 static_cast<u32>(info.tile_mode), info.guest_size, static_cast<u32>(image->flags));
-    }
-}
+void Presenter::DumpGpuImages([[maybe_unused]] std::string_view folder) {}
 
 Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     // Request a free presentation frame.
@@ -2081,9 +1837,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
                 if (Libraries::SystemService::IsSplashVisible()) { // draw splash
                     if (!splash_img.has_value()) {
                         splash_img.emplace();
-                        auto splash_path = Common::ElfInfo::Instance().GetSplashPath();
-                        if (!splash_path.empty()) {
-                            splash_img = ImGui::RefCountedTexture::DecodePngFile(splash_path);
+                        const auto& splash_data = Common::ElfInfo::Instance().GetSplashData();
+                        if (!splash_data.empty()) {
+                            splash_img = ImGui::RefCountedTexture::DecodePngTexture(splash_data);
                         }
                     }
                     if (auto& splash_image = this->splash_img.value()) {
