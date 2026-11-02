@@ -11,6 +11,7 @@
 #include "core/libraries/videoout/video_out.h"
 #include "core/libraries/videoout/videoout_error.h"
 #include "core/platform.h"
+#include "core/vr/vr_runtime.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
@@ -297,8 +298,10 @@ s32 PS4_SYSV_ABI sceVideoOutGetResolutionStatus(s32 handle, SceVideoOutResolutio
 
 s32 PS4_SYSV_ABI sceVideoOutOpen(Libraries::UserService::OrbisUserServiceUserId userId, s32 busType,
                                  s32 index, const void* param) {
-    LOG_INFO(Lib_VideoOut, "called");
-    ASSERT(busType == SCE_VIDEO_OUT_BUS_TYPE_MAIN);
+    LOG_INFO(Lib_VideoOut, "called, busType = {}", busType);
+    ASSERT(busType == SCE_VIDEO_OUT_BUS_TYPE_MAIN ||
+           (busType == SCE_VIDEO_OUT_BUS_TYPE_AUX_SOCIAL_SCREEN &&
+            Core::Vr::Runtime::Instance().IsHeadsetConnected()));
 
     if (index != 0) {
         LOG_ERROR(Lib_VideoOut, "Index != 0");
@@ -306,7 +309,7 @@ s32 PS4_SYSV_ABI sceVideoOutOpen(Libraries::UserService::OrbisUserServiceUserId 
     }
 
     auto* params = reinterpret_cast<const ServiceThreadParams*>(param);
-    int handle = driver->Open(params);
+    int handle = driver->Open(params, busType);
 
     if (handle < 0) {
         LOG_ERROR(Lib_VideoOut, "All available handles are open");
@@ -351,17 +354,41 @@ s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, voi
     Platform::IrqC::Instance()->RegisterOnce(
         Platform::InterruptId::GfxFlip, [=](Platform::InterruptId irq) {
             ASSERT_MSG(irq == Platform::InterruptId::GfxFlip, "An unexpected IRQ occured");
-            ASSERT_MSG(port->buffer_labels[buf_id] == 1, "Out of order flip IRQ");
-            const auto result = driver->SubmitFlip(port, buf_id, flip_arg, true);
+            if (port->buffer_labels[buf_id] != 1) {
+                LOG_WARNING(Lib_VideoOut,
+                            "Out of order flip IRQ: index={} label={} prev_index={} pending={}",
+                            buf_id, port->buffer_labels[buf_id], port->prev_index,
+                            port->flip_status.flip_pending_num);
+            }
+            u64 lock_generation = FlipLabelTracker::kInvalidGeneration;
+            {
+                std::scoped_lock lock{port->port_mutex};
+                lock_generation = port->flip_labels.Generation(static_cast<s32>(buf_id));
+            }
+            const auto result = driver->SubmitFlip(port, buf_id, flip_arg, true, lock_generation);
             ASSERT_MSG(result, "EOP flip submission failed");
         });
 
     return ORBIS_OK;
 }
 
+s32 SubmitHmdFrame(s32 handle, const HmdFrame& frame) {
+    auto* port = driver->GetPort(handle);
+    if (!port || !port->is_open) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
+    }
+    if (!driver->SubmitHmdFrame(port, frame)) {
+        return ORBIS_VIDEO_OUT_ERROR_FLIP_QUEUE_FULL;
+    }
+    return ORBIS_OK;
+}
+
 s32 PS4_SYSV_ABI sceVideoOutGetDeviceCapabilityInfo(
     s32 handle, SceVideoOutDeviceCapabilityInfo* pDeviceCapabilityInfo) {
     pDeviceCapabilityInfo->capability = 0;
+    if (Core::Vr::Runtime::Instance().IsHeadsetConnected()) {
+        pDeviceCapabilityInfo->capability |= ORBIS_VIDEO_OUT_DEVICE_CAPABILITY_VR_VIEW;
+    }
     if (presenter->IsHDRSupported()) {
         auto& game_info = Common::ElfInfo::Instance();
         if (game_info.GetPSFAttributes().support_hdr) {
