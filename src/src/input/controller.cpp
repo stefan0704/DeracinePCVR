@@ -1,7 +1,8 @@
-﻿// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -11,15 +12,49 @@
 #include <SDL3/SDL.h>
 
 #include "common/logging/log.h"
+#include "common/singleton.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/system/userservice.h"
 #include "core/user_settings.h"
+#include "core/vr/vr_runtime.h"
 #include "input/controller.h"
 
 namespace Input {
 
 using Libraries::Pad::OrbisPadButtonDataOffset;
+
+static std::atomic<bool> g_blowing{false};
+
+void SetBlowing(bool blowing) {
+    if (g_blowing.exchange(blowing, std::memory_order_relaxed) != blowing && blowing) {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true)) {
+            LOG_INFO(Input,
+                     "Blowing with buttons: the game hears it as blowing into the microphone");
+        }
+    }
+}
+
+/// A VR host drives the real controller of the first player.
+static bool IsFirstController(const GameController* controller) {
+    return (*Common::Singleton<GameControllers>::Instance())[0] == controller;
+}
+
+/// Some buttons of the first player's controller also mean something about the view in a
+/// headset (see Core::Vr::Runtime::NotePadButton).
+static void NoteViewButtons(OrbisPadButtonDataOffset before, OrbisPadButtonDataOffset after) {
+    using Core::Vr::Runtime;
+    const auto changed = [&](OrbisPadButtonDataOffset button, Runtime::PadButton gesture) {
+        const bool was = True(before & button);
+        const bool is = True(after & button);
+        if (was != is) {
+            Runtime::Instance().NotePadButton(gesture, is);
+        }
+    };
+    changed(OrbisPadButtonDataOffset::Cross, Runtime::PadButton::Cross);
+    changed(OrbisPadButtonDataOffset::Options, Runtime::PadButton::Options);
+}
 
 namespace {
 
@@ -95,12 +130,27 @@ int GameController::ReadStates(State* states, int states_num) {
 }
 
 void GameController::Button(OrbisPadButtonDataOffset button, bool is_pressed) {
-    std::lock_guard lock{m_state_mutex};
-    m_state.OnButton(button, is_pressed);
-    PushStateLocked();
+    if (HeadsetPlays()) {
+        return;
+    }
+    OrbisPadButtonDataOffset before;
+    OrbisPadButtonDataOffset after;
+    {
+        std::lock_guard lock{m_state_mutex};
+        before = m_state.buttonsState;
+        m_state.OnButton(button, is_pressed);
+        after = m_state.buttonsState;
+        PushStateLocked();
+    }
+    if (IsFirstController(this)) {
+        NoteViewButtons(before, after);
+    }
 }
 
 void GameController::Axis(Input::Axis axis, int value, bool smooth) {
+    if (HeadsetPlays()) {
+        return;
+    }
     std::lock_guard lock{m_state_mutex};
     const u64 timestamp = Libraries::Kernel::sceKernelGetProcessTime();
     m_state.OnAxis(axis, value, timestamp, smooth);
@@ -130,7 +180,7 @@ void GameController::ResetOrientation() {
 }
 
 void GameController::SetTouchpadState(int touch_index, bool touch_down, float x, float y) {
-    if (touch_index < 0 || touch_index >= 2) {
+    if (HeadsetPlays() || touch_index < 0 || touch_index >= 2) {
         return;
     }
 
@@ -260,11 +310,80 @@ void GameControllers::ResetLightbarColors() {
 }
 
 bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
-    if (m_sdl_gamepad != nullptr) {
+    if (IsFirstController(this)) {
+        Core::Vr::Runtime::Instance().SetPadVibration(smallMotor, largeMotor);
+    }
+    if (m_sdl_gamepad != nullptr && !HeadsetPlays()) {
         return SDL_RumbleGamepad(m_sdl_gamepad, (smallMotor / 255.0f) * 0xFFFF,
                                  (largeMotor / 255.0f) * 0xFFFF, -1);
     }
     return true;
+}
+
+OrbisPadButtonDataOffset GameController::ApplyRemoteLocked(OrbisPadButtonDataOffset buttons,
+                                                           const std::array<int, 6>& axes,
+                                                           bool touch_down, float touch_x,
+                                                           float touch_y) {
+    const OrbisPadButtonDataOffset before = m_state.buttonsState;
+    const u64 timestamp = Libraries::Kernel::sceKernelGetProcessTime();
+    m_state.connected = true;
+    if (m_state.connected_count == 0) {
+        m_state.connected_count = 1;
+    }
+    for (int i = 0; i < std::to_underlying(Axis::AxisMax); ++i) {
+        m_state.OnAxis(static_cast<Input::Axis>(i), axes[i], timestamp, false);
+    }
+    m_state.buttonsState = buttons;
+
+    const bool was_pressed = m_state.touchpad[0].state || m_state.touchpad[1].state;
+    auto& touch = m_state.touchpad[0];
+    if (touch_down && !touch.state) {
+        touch.ID = m_next_touch_id;
+        m_next_touch_id = m_next_touch_id == 127 ? 1 : m_next_touch_id + 1;
+    }
+    m_state.OnTouchpad(0, touch_down, touch_x, touch_y);
+    const bool is_pressed = m_state.touchpad[0].state || m_state.touchpad[1].state;
+    if (!was_pressed && is_pressed) {
+        m_touch_down_timestamp = timestamp;
+    } else if (was_pressed && !is_pressed) {
+        m_touch_down_timestamp = 0;
+    }
+
+    PushStateLocked(timestamp);
+    return before;
+}
+
+void GameController::ApplyHeadsetState(OrbisPadButtonDataOffset buttons,
+                                       const std::array<int, 6>& axes, bool touch_down,
+                                       float touch_x, float touch_y) {
+    OrbisPadButtonDataOffset before;
+    {
+        std::lock_guard lock{m_state_mutex};
+        if (!HeadsetPlays()) {
+            return;
+        }
+        before = ApplyRemoteLocked(buttons, axes, touch_down, touch_x, touch_y);
+    }
+    if (IsFirstController(this)) {
+        NoteViewButtons(before, buttons);
+    }
+}
+
+void GameController::SetHeadsetPlays(bool plays) {
+    OrbisPadButtonDataOffset before;
+    {
+        std::lock_guard lock{m_state_mutex};
+        if (HeadsetPlays() == plays) {
+            return;
+        }
+        m_headset_plays.store(plays, std::memory_order_relaxed);
+        // Whoever played until now leaves nothing held.
+        static constexpr std::array<int, 6> Rest{128, 128, 128, 128, 0, 0};
+        before = ApplyRemoteLocked({}, Rest, false, 0.5f, 0.5f);
+    }
+    if (IsFirstController(this)) {
+        NoteViewButtons(before, {});
+    }
 }
 
 static bool is_first_check = true;
