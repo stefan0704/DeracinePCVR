@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -16,6 +17,8 @@
 #include "core/libraries/system/userservice.h"
 
 namespace Input {
+
+void SetBlowing(bool blowing);
 
 enum class Axis {
     LeftX = 0,
@@ -106,6 +109,18 @@ public:
     bool SetVibration(u8 smallMotor, u8 largeMotor);
     void SetTouchpadState(int touchIndex, bool touchDown, float x, float y);
 
+    /// In a headset, the headset's own controllers can play this controller in place of the
+    /// PC's gamepad. While they do, what the gamepad's buttons, sticks
+    /// and touchpad say is left aside. The controller is at rest after either change.
+    void SetHeadsetPlays(bool plays);
+    bool HeadsetPlays() const {
+        return m_headset_plays.load(std::memory_order_relaxed);
+    }
+    /// Apply state for the headset's controllers: nothing unless they play.
+    void ApplyHeadsetState(Libraries::Pad::OrbisPadButtonDataOffset buttons,
+                           const std::array<int, 6>& axes, bool touch_down, float touch_x,
+                           float touch_y);
+
     float gyro_buf[3] = {0.0f, 0.0f, 0.0f}, accel_buf[3] = {0.0f, 9.81f, 0.0f};
     s32 user_id = Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID;
     SDL_Gamepad* m_sdl_gamepad = nullptr;
@@ -114,7 +129,11 @@ private:
     // m_state_mutex must be held by the caller.
     void PushStateLocked(u64 timestamp = 0);
     void UpdateOrientationLocked(u64 timestamp);
+    Libraries::Pad::OrbisPadButtonDataOffset ApplyRemoteLocked(
+        Libraries::Pad::OrbisPadButtonDataOffset buttons, const std::array<int, 6>& axes,
+        bool touch_down, float touch_x, float touch_y);
 
+    std::atomic<bool> m_headset_plays{false};
     u8 m_next_touch_id{1};
     u64 m_touch_down_timestamp{};
     u64 m_last_orientation_update{};
