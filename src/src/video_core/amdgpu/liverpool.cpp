@@ -158,7 +158,9 @@ void Liverpool::Process(std::stop_token stoken) {
                 }
                 task = queue.submits.front();
             }
+            in_gfx_task.store(true, std::memory_order_relaxed);
             task.resume();
+            in_gfx_task.store(false, std::memory_order_relaxed);
 
             if (task.done()) {
                 task.destroy();
