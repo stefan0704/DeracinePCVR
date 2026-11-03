@@ -117,6 +117,9 @@ void Emulator::Shutdown() {
         // need to give SDL time to do this before the runtime exits
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
+#ifdef ENABLE_OPENXR_HOST
+    Core::Vr::OpenXrHost::Instance().Shutdown();
+#endif
     exit_done = true;
 }
 
@@ -578,6 +581,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     controllers = Common::Singleton<Input::GameControllers>::Instance();
     linker = Common::Singleton<Core::Linker>::Instance();
 
+    Core::Vr::Runtime::Instance().Configure(psf_attributes.support_ps_vr.Value() != 0,
+                                            psf_attributes.require_ps_vr.Value() != 0);
+
     // Load renderdoc module
     VideoCore::LoadRenderDoc();
 
@@ -717,10 +723,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
         play_time_thread = std::jthread([this, id](std::stop_token stop) {
             while (Common::StoppableTimedWait(stop, std::chrono::seconds(60))) {
-            #ifdef ENABLE_OPENXR_HOST
-    Core::Vr::OpenXrHost::Instance().Shutdown();
-#endif
-    UpdatePlayTime(id);
+                UpdatePlayTime(id);
             }
         });
     }
@@ -731,6 +734,10 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     while (window->IsOpen()) {
         window->WaitEvent();
     }
+
+#ifdef ENABLE_OPENXR_HOST
+    Core::Vr::OpenXrHost::Instance().Shutdown();
+#endif
 
     std::quick_exit(0);
 }

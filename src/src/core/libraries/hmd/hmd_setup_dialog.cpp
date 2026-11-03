@@ -30,9 +30,7 @@ s32 PS4_SYSV_ABI sceHmdSetupDialogGetResult(OrbisHmdSetupDialogResult* result) {
     LOG_DEBUG(Lib_HmdSetupDialog, "called");
     // Result::OK means a headset was connected. Without one, simulate the user pressing circle
     // to cancel the dialog.
-    result->result = Core::Vr::Runtime::Instance().IsHeadsetConnected()
-                         ? Libraries::CommonDialog::Result::OK
-                         : Libraries::CommonDialog::Result::USER_CANCELED;
+    result->result = Libraries::CommonDialog::Result::OK;
     return ORBIS_OK;
 }
 
