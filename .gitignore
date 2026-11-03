@@ -36,3 +36,7 @@ src/externals/aacdec/*
 # Documentation and settings
 DEVELOPMENT.md
 settings.json
+
+# Agent local workspace customizations & skills downloads
+.agents/
+tools/download*
