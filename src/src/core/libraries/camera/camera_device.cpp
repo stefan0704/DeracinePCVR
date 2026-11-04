@@ -55,6 +55,12 @@ s32 PS4_SYSV_ABI sceCameraGetDeviceInfo(s32 reserved, OrbisCameraDeviceInfo* dev
     if (!g_library_opened) {
         return ORBIS_CAMERA_ERROR_NOT_INIT;
     }
+    if (IsVirtualCamera()) {
+        std::memset(device_info, 0, sizeof(OrbisCameraDeviceInfo));
+        device_info->sizeThis = sizeof(OrbisCameraDeviceInfo);
+        device_info->infoRevision = 1;
+        return ORBIS_OK;
+    }
 
     return ORBIS_CAMERA_ERROR_NOT_CONNECTED;
 }

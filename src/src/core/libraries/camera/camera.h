@@ -47,6 +47,9 @@ struct OrbisCameraConfig {
 
 extern OrbisCameraConfigExtention output_config0, output_config1;
 
+bool IsVirtualCamera();
+bool IsCameraConnected();
+
 enum OrbisCameraAecAgcTarget {
     ORBIS_CAMERA_ATTRIBUTE_AECAGC_TARGET_DEF = 0x00,
     ORBIS_CAMERA_ATTRIBUTE_AECAGC_TARGET_2_0 = 0x20,

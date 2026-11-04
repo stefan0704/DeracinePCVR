@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <exception>
+#include <string>
 #include <fmt/format.h>
 #include "common/arch.h"
 #include "common/assert.h"
@@ -16,6 +21,63 @@
 #ifdef _WIN32
 #include <windows.h>
 static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
+static constexpr DWORD MSVC_CPP_EXCEPTION = 0xE06D7363;
+
+static std::string ModuleName(const void* base, const void* address = nullptr) {
+    HMODULE module = static_cast<HMODULE>(const_cast<void*>(base));
+    if (module == nullptr &&
+        !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCSTR>(address), &module)) {
+        return "?";
+    }
+    char name[MAX_PATH] = "?";
+    GetModuleFileNameA(module, name, sizeof(name));
+    const char* file = std::strrchr(name, '\\');
+    return file ? file + 1 : name;
+}
+
+struct CppThrowInfo {
+    u32 attributes;
+    s32 unwind;
+    s32 forward_compat;
+    s32 catchable_types;
+};
+struct CppCatchableType {
+    u32 properties;
+    s32 type;
+    s32 member_displacement;
+    s32 vbtable_displacement;
+    s32 vbtable_index;
+    s32 size;
+    s32 copy;
+};
+
+static std::string CppExceptionText(const EXCEPTION_RECORD& record) {
+    const ULONG_PTR magic = record.NumberParameters >= 4 ? record.ExceptionInformation[0] : 0;
+    if (magic < 0x19930520 || magic > 0x19930522 || record.ExceptionInformation[1] == 0 ||
+        record.ExceptionInformation[2] == 0 || record.ExceptionInformation[3] == 0) {
+        return {};
+    }
+    const auto object = record.ExceptionInformation[1];
+    const auto image = record.ExceptionInformation[3];
+    const auto* info = reinterpret_cast<const CppThrowInfo*>(record.ExceptionInformation[2]);
+    if (info->catchable_types == 0) {
+        return {};
+    }
+    const auto* types = reinterpret_cast<const s32*>(image + info->catchable_types);
+    for (s32 i = 0; i < std::min(types[0], 16); ++i) {
+        const auto* type = reinterpret_cast<const CppCatchableType*>(image + types[1 + i]);
+        const char* name = reinterpret_cast<const char*>(image + type->type + 16);
+        if (type->type != 0 && type->vbtable_displacement < 0 &&
+            std::strcmp(name, ".?AVexception@std@@") == 0) {
+            const auto* exception =
+                reinterpret_cast<const std::exception*>(object + type->member_displacement);
+            return exception->what();
+        }
+    }
+    return {};
+}
 #else
 #include <csignal>
 #include <pthread.h>
@@ -124,6 +186,21 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     case MS_VC_EXCEPTION:
         LOG_DEBUG(Debug, "Pass MS_VC_EXCEPTION at {} to handler", address);
         return EXCEPTION_EXECUTE_HANDLER;
+    case MSVC_CPP_EXCEPTION: {
+        static std::atomic<u32> thrown{0};
+        const u32 count = ++thrown;
+        if (count <= 4 || count % 100 == 0) {
+            const auto* record = pExp->ExceptionRecord;
+            const std::string text = CppExceptionText(*record);
+            LOG_WARNING(Debug, "A C++ exception was thrown in {} ({} so far){}{}",
+                        ModuleName(record->NumberParameters >= 4
+                                       ? reinterpret_cast<void*>(record->ExceptionInformation[3])
+                                       : nullptr,
+                                   address),
+                        count, text.empty() ? "" : ": ", text);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     default:
         break;
     }

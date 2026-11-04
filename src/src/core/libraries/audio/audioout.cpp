@@ -18,6 +18,7 @@
 #include "core/libraries/audio/audioout_error.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
+#include "core/vr/vr_runtime.h"
 
 namespace Libraries::AudioOut {
 
@@ -171,6 +172,12 @@ static void AudioOutputThread(std::shared_ptr<PortOut> port, const std::stop_tok
     Common::AccurateTimer timer(
         std::chrono::nanoseconds(1000000000ULL * port->buffer_frames / port->sample_rate));
 
+    const bool muted =
+        port->type == OrbisAudioOutPort::Aux && Core::Vr::Runtime::Instance().IsHeadsetConnected();
+    if (muted) {
+        LOG_INFO(Lib_AudioOut, "the AUX port is the mix for the television and is not played");
+    }
+
     while (true) {
         timer.Start();
 
@@ -181,7 +188,9 @@ static void AudioOutputThread(std::shared_ptr<PortOut> port, const std::stop_tok
             }
 
             if (port->output_ready) {
-                port->impl->Output(port->output_buffer);
+                if (!muted) {
+                    port->impl->Output(port->output_buffer);
+                }
                 port->output_ready = false;
                 port->last_output_time =
                     Kernel::sceKernelGetProcessTime(); // moved from sceAudioOutOutput TOOD recheck

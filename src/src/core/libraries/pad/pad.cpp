@@ -8,6 +8,7 @@
 #include "core/libraries/libs.h"
 #include "core/libraries/pad/pad_errors.h"
 #include "core/user_settings.h"
+#include "core/vr/vr_runtime.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
 #include "pad.h"
@@ -516,6 +517,9 @@ int PS4_SYSV_ABI scePadResetOrientation(s32 handle) {
     }
     auto& controller = *it->second;
     controller.ResetOrientation();
+    if (&controller == (*Common::Singleton<Input::GameControllers>::Instance())[0]) {
+        Core::Vr::Runtime::Instance().ResetPadYaw();
+    }
 
     return ORBIS_OK;
 }
