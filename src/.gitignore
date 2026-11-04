@@ -34,6 +34,7 @@ bld/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
+!compatibility-site/assets/logs/
 [Bb]uild/
 
 # Visual Studio 2015/2017 cache/options directory
@@ -421,3 +422,32 @@ cmake-build-*
 
 # Nix Result symlink
 result
+
+# Local implementation worktrees
+.worktrees/
+
+/android/BachataS4/.gradle/
+/android/BachataS4/build-logic/.gradle/
+/android/BachataS4/**/build/
+/android/BachataS4/local.properties
+/android/BachataS4/.idea/
+/android/BachataS4/app/src/main/assets/runtime/
+/android/BachataS4/app/src/playstore/assets/runtime/
+/android/BachataS4/app/src/main/assets/patches/
+/android/BachataS4/app/src/playstore/assets/patches/
+/android/BachataS4/app/build/generated/patches/
+/android/BachataS4/core/runtime/src/main/jniLibs/
+/android/BachataS4/keystore/
+/android/BachataS4/*.jks
+/android/BachataS4/*.keystore
+/android/BachataS4/session-logs*
+session-logs*
+/runtime/build/
+/runtime/sources/
+
+.cxx
+
+# Large local guest pins (optional; package-runtime uses if present)
+
+# Isolated local agent worktrees
+.worktrees/

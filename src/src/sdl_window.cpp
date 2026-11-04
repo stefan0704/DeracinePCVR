@@ -22,11 +22,13 @@
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
 #include "core/user_settings.h"
-#include "imgui/friends_layer.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
+#include "input/scripted_input.h"
 #include "input/input_handler.h"
 #include "input/input_mouse.h"
+#include "input/pad_source.h"
+#include "core/vr/vr_runtime.h"
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
 
@@ -34,7 +36,6 @@
 #include <SDL3/SDL_metal.h>
 #endif
 #include <core/emulator_settings.h>
-#include "core/libraries/keyboard/keyboard.h"
 #include "core/libraries/mouse/sdl_mouse.h"
 
 CMRC_DECLARE(res);
@@ -84,7 +85,9 @@ static OrbisPadButtonDataOffset SDLGamepadToOrbisButton(u8 button) {
 
 static Uint32 SDLCALL PollController(void* userdata, SDL_TimerID timer_id, Uint32 interval) {
     auto* controller = reinterpret_cast<Input::GameController*>(userdata);
-    controller->PollState();
+    controller->UpdateAxisSmoothing();
+    controller->Gyro(0);
+    controller->Acceleration(0);
     return interval;
 }
 
@@ -101,33 +104,40 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     if (!SDL_SetHint(SDL_HINT_APP_NAME, "shadPS4")) {
         UNREACHABLE_MSG("Failed to set SDL window hint: {}", SDL_GetError());
     }
+    // With SHADPS4_HEADLESS there is no display to show the game on: the frames go to a VR host
+    // (or nowhere), and SDL only has to provide events.
+    const bool headless = std::getenv("SHADPS4_HEADLESS") != nullptr;
+    if (headless) {
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    }
+    LOG_INFO(Input, "Initializing SDL video subsystem");
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         UNREACHABLE_MSG("Failed to initialize SDL video subsystem: {}", SDL_GetError());
     }
-    // On macOS, the future Intel compatibility environment does not include camera frameworks.
-    // Just skip initializing it entirely, no point in splitting old vs new OS versions here.
-#ifndef __APPLE__
+    LOG_INFO(Input, "SDL video subsystem initialized");
     if (!SDL_Init(SDL_INIT_CAMERA)) {
         LOG_ERROR(Input, "Failed to initialize SDL camera subsystem: {}", SDL_GetError());
     }
-#endif
     SDL_InitSubSystem(SDL_INIT_AUDIO);
 
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
                           std::string(window_title).c_str());
+#ifdef ENABLE_BACHATA_RUNTIME
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, 0);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, 0);
+#else
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED);
+#endif
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, width);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, height);
-    SDL_SetNumberProperty(props, "flags", SDL_WINDOW_VULKAN);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                          headless ? 0 : SDL_WINDOW_VULKAN);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
-    // Creating the window directly in fullscreen avoids a visible windowed -> fullscreen
-    // transition on startup. SDL sizes the window to the display and keeps the requested
-    // width/height as the windowed size to restore when leaving fullscreen.
-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
-                           EmulatorSettings.IsFullScreen());
+    LOG_INFO(Input, "Creating SDL Vulkan window");
     window = SDL_CreateWindowWithProperties(props);
+    LOG_INFO(Input, "SDL Vulkan window creation returned");
     SDL_DestroyProperties(props);
     if (window == nullptr) {
         UNREACHABLE_MSG("Failed to create window handle: {}", SDL_GetError());
@@ -137,7 +147,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
 
     bool error = false;
     const SDL_DisplayID displayIndex = SDL_GetDisplayForWindow(window);
-    if (displayIndex == 0) {
+    if (displayIndex < 0) {
         LOG_ERROR(Frontend, "Error getting display index: {}", SDL_GetError());
         error = true;
     }
@@ -152,11 +162,88 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     }
     SDL_SetWindowFullscreen(window, EmulatorSettings.IsFullScreen());
     SDL_SyncWindow(window);
-    // The window geometry is only final once the fullscreen transition has settled; refresh
-    // the cached size so the first swapchain and the splashscreen use the real drawable size.
-    SDL_GetWindowSizeInPixels(window, &width, &height);
 
+#ifndef ENABLE_BACHATA_RUNTIME
     SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    // SHADPS4_TEST_VIRTUAL_GAMEPADS=<n>, for tests: that many gamepads that nobody holds, an
+    // Xbox controller first and DualSenses after it, as if they were plugged in.
+    if (const char* count = std::getenv("SHADPS4_TEST_VIRTUAL_GAMEPADS"); count != nullptr) {
+        for (int i = 0; i < std::clamp(std::atoi(count), 0, 4); ++i) {
+            SDL_VirtualJoystickDesc desc;
+            SDL_INIT_INTERFACE(&desc);
+            desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+            desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+            desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+            desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
+            desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+            desc.vendor_id = i == 0 ? 0x045e : 0x054c;
+            desc.product_id = i == 0 ? 0x028e : 0x0ce6;
+            desc.name = i == 0 ? "Test Xbox 360 Controller" : "Test DualSense";
+            const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+            LOG_INFO(Input, "Test gamepad {} plugged in: {}", desc.name, id != 0 ? "yes" : SDL_GetError());
+            // SHADPS4_TEST_VIRTUAL_PRESS=<seconds>[,<seconds>...]: the first of them has its
+            // cross button pressed for a moment, so long after the start.
+            // SHADPS4_TEST_VIRTUAL_TURN=<seconds>[,...]: its left shoulder button held and
+            // its right stick flicked to the right (to the left for a negative time).
+            if (i == 0 && id != 0) {
+                static SDL_Joystick* test_pad = nullptr;
+                test_pad = SDL_OpenJoystick(id);
+                const auto each = [](const char* name, auto&& with) {
+                    const char* at = std::getenv(name);
+                    while (at != nullptr && *at != '\0') {
+                        with(std::atof(at));
+                        at = std::strchr(at, ',');
+                        at = at != nullptr ? at + 1 : nullptr;
+                    }
+                };
+                const auto later = [](double seconds, SDL_TimerCallback what) {
+                    if (SDL_AddTimer(static_cast<Uint32>(seconds * 1000.0), what, nullptr) == 0) {
+                        LOG_ERROR(Input, "Test gamepad: no timer: {}", SDL_GetError());
+                    }
+                };
+                each("SHADPS4_TEST_VIRTUAL_PRESS", [&](double seconds) {
+                    later(seconds, [](void*, SDL_TimerID, Uint32) -> Uint32 {
+                        const bool done =
+                            SDL_SetJoystickVirtualButton(test_pad, SDL_GAMEPAD_BUTTON_SOUTH, true);
+                        LOG_INFO(Input, "Test gamepad: cross pressed: {}", done ? "yes" : SDL_GetError());
+                        return 0;
+                    });
+                    later(seconds + 0.3, [](void*, SDL_TimerID, Uint32) -> Uint32 {
+                        SDL_SetJoystickVirtualButton(test_pad, SDL_GAMEPAD_BUTTON_SOUTH, false);
+                        return 0;
+                    });
+                });
+                each("SHADPS4_TEST_VIRTUAL_TURN", [&](double seconds) {
+                    const bool left = seconds < 0.0;
+                    seconds = std::abs(seconds);
+                    later(seconds, [](void*, SDL_TimerID, Uint32) -> Uint32 {
+                        const bool done = SDL_SetJoystickVirtualButton(
+                            test_pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, true);
+                        LOG_INFO(Input, "Test gamepad: left shoulder button held for a turn: {}",
+                                 done ? "yes" : SDL_GetError());
+                        return 0;
+                    });
+                    later(seconds + 0.2, left ? [](void*, SDL_TimerID, Uint32) -> Uint32 {
+                        SDL_SetJoystickVirtualAxis(test_pad, SDL_GAMEPAD_AXIS_RIGHTX, -32767);
+                        return 0;
+                    } : [](void*, SDL_TimerID, Uint32) -> Uint32 {
+                        SDL_SetJoystickVirtualAxis(test_pad, SDL_GAMEPAD_AXIS_RIGHTX, 32767);
+                        return 0;
+                    });
+                    later(seconds + 0.4, [](void*, SDL_TimerID, Uint32) -> Uint32 {
+                        SDL_SetJoystickVirtualAxis(test_pad, SDL_GAMEPAD_AXIS_RIGHTX, 0);
+                        return 0;
+                    });
+                    later(seconds + 0.6, [](void*, SDL_TimerID, Uint32) -> Uint32 {
+                        SDL_SetJoystickVirtualButton(test_pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
+                                                     false);
+                        return 0;
+                    });
+                });
+            }
+        }
+    }
+#endif
 
 #if defined(SDL_PLATFORM_WIN32)
     window_info.type = WindowSystemType::Windows;
@@ -181,9 +268,15 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     window_info.type = WindowSystemType::Metal;
     window_info.render_surface = SDL_Metal_GetLayer(SDL_Metal_CreateView(window));
 #endif
+    if (headless) {
+        window_info = {};
+    }
     // input handler init-s
     Input::ControllerOutput::LinkJoystickAxes();
     Input::ParseInputConfig(std::string(Common::ElfInfo::Instance().GameSerial()));
+#ifndef ENABLE_BACHATA_RUNTIME
+    controllers.TryOpenSDLControllers();
+#endif
 
     if (EmulatorSettings.IsBackgroundControllerInput()) {
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
@@ -192,13 +285,39 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
 
 WindowSDL::~WindowSDL() = default;
 
-void WindowSDL::SetIcon(std::span<const u8> png_data) {
-    if (png_data.empty()) {
-        LOG_WARNING(Core, "No window icon data available, using default icon.");
+void WindowSDL::SetIcon(const std::filesystem::path& path) {
+#ifdef ENABLE_BACHATA_RUNTIME
+    // Desktop X11 icons become a megabyte-scale property request. The embedded Android X server
+    // does not need window-manager metadata, and processing it blocks Vulkan WSI negotiation.
+    return;
+#endif
+    if (!std::filesystem::exists(path)) {
+        LOG_WARNING(Core, "Could not find icon file '{}', using default icon.",
+                    fmt::UTF(path.u8string()));
         SetDefaultWindowIcon(window);
         return;
     }
-    SetWindowIcon(window, std::vector<u8>(png_data.begin(), png_data.end()));
+
+    Common::FS::IOFile file{path, Common::FS::FileAccessMode::Read,
+                            Common::FS::FileType::BinaryFile,
+                            Common::FS::FileShareFlag::ShareReadWrite};
+    if (!file.IsOpen()) {
+        LOG_ERROR(Core, "Failed to open window icon file '{}'.", fmt::UTF(path.u8string()));
+        SetDefaultWindowIcon(window);
+        return;
+    }
+
+    const u64 fileSize = file.GetSize();
+    std::vector<u8> buf(fileSize);
+    const size_t bytesRead = file.ReadRaw<u8>(buf.data(), fileSize);
+    file.Close();
+    if (bytesRead < fileSize) {
+        LOG_ERROR(Core, "Failed to read window icon file '{}'.", fmt::UTF(path.u8string()));
+        SetDefaultWindowIcon(window);
+        return;
+    }
+
+    SetWindowIcon(window, buf);
 }
 
 void WindowSDL::WaitEvent() {
@@ -209,7 +328,7 @@ void WindowSDL::WaitEvent() {
         return;
     }
 
-    if (Libraries::Mouse::PushSDLEvent(event) || Libraries::Keyboard::PushSDLEvent(event)) {
+    if (Libraries::Mouse::PushSDLEvent(event)) {
         return;
     }
 
@@ -221,8 +340,6 @@ void WindowSDL::WaitEvent() {
     case SDL_EVENT_WINDOW_RESIZED:
     case SDL_EVENT_WINDOW_MAXIMIZED:
     case SDL_EVENT_WINDOW_RESTORED:
-    case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
-    case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
         OnResize();
         break;
     case SDL_EVENT_WINDOW_MINIMIZED:
@@ -240,7 +357,9 @@ void WindowSDL::WaitEvent() {
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
     case SDL_EVENT_GAMEPAD_REMOVED:
+#ifndef ENABLE_BACHATA_RUNTIME
         controllers.TryOpenSDLControllers();
+#endif
         break;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
     case SDL_EVENT_GAMEPAD_BUTTON_UP:
@@ -279,9 +398,6 @@ void WindowSDL::WaitEvent() {
         break;
     case SDL_EVENT_TOGGLE_SIMPLE_FPS:
         Overlay::ToggleSimpleFps();
-        break;
-    case SDL_EVENT_TOGGLE_FRIENDS:
-        ImGui::Friends::Toggle();
         break;
     case SDL_EVENT_RELOAD_INPUTS:
         Input::ParseInputConfig(std::string(Common::ElfInfo::Instance().GameSerial()));
@@ -407,6 +523,113 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
                       event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
     Input::InputEvent input_event = Input::InputBinding::GetInputEventFromSDLEvent(*event);
 
+    // In a headset, the first player's gamepad and the headset's own controllers take turns:
+    // whichever was used last plays (see Input::PadSource). A button pressed, a stick or a
+    // trigger pushed, the touchpad touched is the gamepad being used.
+    {
+        SDL_JoystickID which = 0;
+        bool used = false;
+        switch (event->type) {
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            which = event->gbutton.which;
+            used = true;
+            break;
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            which = event->gaxis.which;
+            used = std::abs(static_cast<int>(event->gaxis.value)) > 16000;
+            break;
+        case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
+            which = event->gtouchpad.which;
+            used = true;
+            break;
+        default:
+            break;
+        }
+        auto* const first = controllers[0];
+        if (used && first->m_sdl_gamepad != nullptr &&
+            SDL_GetGamepadFromID(which) == first->m_sdl_gamepad) {
+            const double now = std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now().time_since_epoch())
+                                   .count();
+            if (Input::FirstPadSource().GamepadUsed(now)) {
+                first->SetHeadsetPlays(false);
+                LOG_INFO(Input, "Controller 1 was used: it plays again, and the headset's "
+                                "controllers are left aside until they are used");
+            }
+        }
+    }
+
+    // The PS button is nothing a title ever sees. In a headset, pressed and let go, it resets
+    // the view. Held, it has the D-pad move the place a controller that nothing locates is
+    // held to be at (up, down, left, right; L1 nearer, R1 farther; two centimetres a press),
+    // triangle switch between that place and the standard one, and square blow into the
+    // microphone for as long as it is held. None of that reaches the title.
+    if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+        event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+        static bool held = false;
+        static bool used = false;
+        static u32 kept_back = 0;
+        const bool down = event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        const u8 button = event->gbutton.button;
+        auto& runtime = Core::Vr::Runtime::Instance();
+        if (button == SDL_GAMEPAD_BUTTON_GUIDE) {
+            if (down) {
+                held = true;
+                used = false;
+            } else {
+                if (held && !used) {
+                    runtime.NotePadButton(Core::Vr::Runtime::PadButton::Home, true);
+                    runtime.NotePadButton(Core::Vr::Runtime::PadButton::Home, false);
+                }
+                held = false;
+            }
+        } else if (button < 32 && !down && (kept_back & (1u << button)) != 0) {
+            // Let go of after it did something else than the title would have seen.
+            kept_back &= ~(1u << button);
+            if (button == SDL_GAMEPAD_BUTTON_WEST) {
+                Input::SetBlowing(false);
+            }
+            return;
+        } else if (held && down && button < 32) {
+            static constexpr float Step = 0.02f;
+            bool taken = true;
+            switch (button) {
+            case SDL_GAMEPAD_BUTTON_DPAD_UP:
+                runtime.MoveOwnPadPlace({0.0f, Step, 0.0f});
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+                runtime.MoveOwnPadPlace({0.0f, -Step, 0.0f});
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+                runtime.MoveOwnPadPlace({-Step, 0.0f, 0.0f});
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+                runtime.MoveOwnPadPlace({Step, 0.0f, 0.0f});
+                break;
+            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
+                runtime.MoveOwnPadPlace({0.0f, 0.0f, Step});
+                break;
+            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
+                runtime.MoveOwnPadPlace({0.0f, 0.0f, -Step});
+                break;
+            case SDL_GAMEPAD_BUTTON_NORTH:
+                runtime.SwitchPadPlace();
+                break;
+            case SDL_GAMEPAD_BUTTON_WEST:
+                Input::SetBlowing(true);
+                break;
+            default:
+                taken = false;
+                break;
+            }
+            if (taken) {
+                used = true;
+                kept_back |= 1u << button;
+                return;
+            }
+        }
+    }
+
     // the touchpad button shouldn't be rebound to anything else,
     // as it would break the entire touchpad handling
     // You can still bind other things to it though
@@ -426,11 +649,19 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
             if (gamepad < 5) {
                 controllers[gamepad]->UpdateGyro(event->gsensor.data);
             }
+            if (gamepad == 0) {
+                const float* gyro = event->gsensor.data;
+                Core::Vr::Runtime::Instance().UpdatePadGyro({gyro[0], gyro[1], gyro[2]});
+            }
             break;
         case SDL_SENSOR_ACCEL:
             gamepad = controllers.GetGamepadIndexFromJoystickId(event->gsensor.which);
             if (gamepad < 5) {
                 controllers[gamepad]->UpdateAcceleration(event->gsensor.data);
+            }
+            if (gamepad == 0) {
+                const float* accel = event->gsensor.data;
+                Core::Vr::Runtime::Instance().UpdatePadAcceleration({accel[0], accel[1], accel[2]});
             }
             break;
         default:

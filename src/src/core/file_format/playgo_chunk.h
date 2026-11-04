@@ -1,10 +1,9 @@
-// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 #include <filesystem>
 #include <mutex>
-#include <span>
 #include <vector>
 #include "common/io_file.h"
 #include "core/libraries/playgo/playgo_types.h"
@@ -101,7 +100,7 @@ public:
     OrbisPlayGoHandle handle = 0;
     OrbisPlayGoChunkId id = 0;
     OrbisPlayGoLocus locus = OrbisPlayGoLocus::NotDownloaded;
-    OrbisPlayGoInstallSpeed speed = OrbisPlayGoInstallSpeed::Full;
+    OrbisPlayGoInstallSpeed speed = OrbisPlayGoInstallSpeed::Trickle;
     s64 speed_tick = 0;
     OrbisPlayGoEta eta = 0;
     OrbisPlayGoLanguageMask langMask = 0;
@@ -112,7 +111,6 @@ public:
     ~PlaygoFile() = default;
 
     bool Open(const std::filesystem::path& filepath);
-    bool Open(std::span<const u8> data);
     bool LoadChunks(const Common::FS::IOFile& file);
 
     PlaygoHeader& GetPlaygoHeader() {

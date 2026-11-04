@@ -136,13 +136,8 @@ std::expected<Runner*, ErrorInfo> Runner::instance() {
     return g_runner.get();
 }
 
-void Runner::DestroyInstance() {
-    std::lock_guard lock{g_runner_mutex};
-    g_runner.reset();
-}
-
 std::expected<void, ErrorInfo> Runner::initialize() {
-    VULKAN_HPP_DEFAULT_DISPATCHER.init();
+    VULKAN_HPP_DEFAULT_DISPATCHER.init(loader_);
 
     // ---- Instance ------------------------------------------------------
     vk::ApplicationInfo app_info{
@@ -228,12 +223,9 @@ std::expected<void, ErrorInfo> Runner::initialize() {
     vk::PhysicalDeviceVulkan12Features v12_feat{
         .pNext = &v11_feat,
         .uniformAndStorageBuffer8BitAccess = VK_TRUE,
-        .shaderFloat16 = VK_TRUE,
         .shaderInt8 = VK_TRUE,
     };
-    supports_float64_ = physical_device_.getFeatures().shaderFloat64;
     vk::PhysicalDeviceFeatures phys_feat{
-        .shaderFloat64 = supports_float64_,
         .shaderInt64 = VK_TRUE,
         .shaderInt16 = VK_TRUE,
     };

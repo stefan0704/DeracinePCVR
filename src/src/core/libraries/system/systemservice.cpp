@@ -8,9 +8,9 @@
 #include "core/file_sys/fs.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
-#include "core/libraries/music/music_player_service.h"
 #include "core/libraries/system/systemservice.h"
 #include "core/libraries/system/systemservice_error.h"
+#include "core/vr/vr_runtime.h"
 #include "emulator.h"
 
 namespace Libraries::SystemService {
@@ -1080,18 +1080,18 @@ int PS4_SYSV_ABI sceShellCoreUtilIsAccessibilityZoomLocked() {
 }
 
 int PS4_SYSV_ABI sceShellCoreUtilIsBgmCpuBudgetAcquired() {
-    LOG_DEBUG(Lib_SystemService, "called");
-    return 1;
+    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceShellCoreUtilIsBgmCpuBudgetAvailable() {
-    LOG_DEBUG(Lib_SystemService, "called");
-    return 1;
+    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceShellCoreUtilIsBgmPlaying() {
-    LOG_DEBUG(Lib_SystemService, "called");
-    return Libraries::MusicPlayerService::IsBgmPlaying() ? 1 : 0;
+    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceShellCoreUtilIsExternalStorageAppMoveInProgress() {
@@ -1784,7 +1784,9 @@ s32 PS4_SYSV_ABI sceSystemServiceGetStatus(OrbisSystemServiceStatus* status) {
 
     std::lock_guard<std::mutex> lock(g_event_queue_mutex);
     status->event_num = static_cast<s32>(g_event_queue.size());
-    status->is_system_ui_overlaid = false;
+    // While the headset is off the player's head the console puts a screen of its own over
+    // the game ("put the headset on"): what a title pauses for.
+    status->is_system_ui_overlaid = !Core::Vr::Runtime::Instance().IsHeadsetWorn();
     status->is_in_background_execution = false;
     status->is_cpu_mode7_cpu_normal = true;
     status->is_game_live_streaming_on_air = false;
@@ -1814,8 +1816,8 @@ int PS4_SYSV_ABI sceSystemServiceIsAppSuspended() {
 }
 
 int PS4_SYSV_ABI sceSystemServiceIsBgmPlaying() {
-    LOG_DEBUG(Lib_SystemService, "called");
-    return Libraries::MusicPlayerService::IsBgmPlaying() ? 1 : 0;
+    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceIsEyeToEyeDistanceAdjusted() {
@@ -1877,20 +1879,10 @@ int PS4_SYSV_ABI sceSystemServiceLoadExec(const char* path, const char* argv[]) 
     LOG_DEBUG(Lib_SystemService, "called");
     auto emu = Common::Singleton<Core::Emulator>::Instance();
     auto mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
-    // Validate through the mount stack so archive-backed targets resolve.
-    if (!mnt->Exists(std::string_view(path))) {
+    auto hostPath = mnt->GetHostPath(std::string_view(path));
+    if (hostPath.empty()) {
         LOG_INFO(Lib_SystemService, "Restart called with invalid file '{}', exiting.", path);
         std::quick_exit(0);
-    }
-    std::filesystem::path exec_path;
-    if (auto handle = mnt->Open(std::string_view(path), /*writable=*/false)) {
-        if (auto host = handle->GetHostPath(); host.has_value()) {
-            exec_path = *host;
-        } else {
-            exec_path = std::filesystem::path(std::string_view(path));
-        }
-    } else {
-        exec_path = mnt->GetHostPath(std::string_view(path));
     }
     std::vector<std::string> args;
     if (argv != nullptr) {
@@ -1898,7 +1890,7 @@ int PS4_SYSV_ABI sceSystemServiceLoadExec(const char* path, const char* argv[]) 
             args.push_back(std::string(*ptr));
         }
     }
-    emu->Restart(exec_path, args);
+    emu->Restart(hostPath, args);
     return ORBIS_OK;
 }
 
@@ -1956,31 +1948,12 @@ s32 PS4_SYSV_ABI sceSystemServiceParamGetInt(OrbisSystemServiceParamId param_id,
     case OrbisSystemServiceParamId::TimeFormat:
         *value = u32(OrbisSystemParamTimeFormat::Fmt24Hour);
         break;
-    case OrbisSystemServiceParamId::TimeZone: {
-#ifdef _WIN32
-        _tzset();
-        *value = -static_cast<int>(_timezone / 60);
-#else
-        time_t t = time(nullptr);
-        struct tm tm_val;
-        localtime_r(&t, &tm_val);
-        long dst_sec = (tm_val.tm_isdst > 0) ? 3600 : 0;
-        long standard_offset_sec = tm_val.tm_gmtoff - dst_sec;
-        *value = static_cast<int>(standard_offset_sec / 60);
-#endif
+    case OrbisSystemServiceParamId::TimeZone:
+        *value = +120;
         break;
-    }
-    case OrbisSystemServiceParamId::Summertime: {
-        time_t t = time(nullptr);
-        struct tm tm_val;
-#ifdef _WIN32
-        localtime_s(&tm_val, &t);
-#else
-        localtime_r(&t, &tm_val);
-#endif
-        *value = (tm_val.tm_isdst > 0) ? 1 : 0;
+    case OrbisSystemServiceParamId::Summertime:
+        *value = 1;
         break;
-    }
     case OrbisSystemServiceParamId::GameParentalLevel:
         *value = u32(OrbisSystemParamGameParentalLevel::Off);
         break;
@@ -2024,8 +1997,6 @@ s32 PS4_SYSV_ABI sceSystemServiceReceiveEvent(OrbisSystemServiceEvent* event) {
 
     *event = g_event_queue.front();
     g_event_queue.pop();
-    LOG_DEBUG(Lib_SystemService, "delivered event type={:#x} ({} still queued)",
-              static_cast<u32>(event->event_type), g_event_queue.size());
     return ORBIS_OK;
 }
 

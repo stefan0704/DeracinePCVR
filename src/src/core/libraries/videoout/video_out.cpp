@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <mutex>
+
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -11,7 +14,6 @@
 #include "core/libraries/videoout/video_out.h"
 #include "core/libraries/videoout/videoout_error.h"
 #include "core/platform.h"
-#include "core/vr/vr_runtime.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
@@ -19,6 +21,9 @@ extern std::unique_ptr<Vulkan::Presenter> presenter;
 namespace Libraries::VideoOut {
 
 static std::unique_ptr<VideoOutDriver> driver;
+static std::atomic_uint32_t submit_flip_traces{};
+static std::atomic_uint32_t eop_register_traces{};
+static std::atomic_uint32_t eop_irq_traces{};
 
 void PS4_SYSV_ABI sceVideoOutSetBufferAttribute(BufferAttribute* attribute, PixelFormat pixelFormat,
                                                 u32 tilingMode, u32 aspectRatio, u32 width,
@@ -154,6 +159,12 @@ s32 PS4_SYSV_ABI sceVideoOutIsFlipPending(s32 handle) {
 }
 
 s32 PS4_SYSV_ABI sceVideoOutSubmitFlip(s32 handle, s32 bufferIndex, s32 flipMode, s64 flipArg) {
+    const bool trace = submit_flip_traces.fetch_add(1, std::memory_order_relaxed) < 32;
+    if (trace) {
+        LOG_INFO(Lib_VideoOut,
+                 "BACHATA_FLIP_TRACE stage=guest_submit handle={} index={} mode={} arg={}",
+                 handle, bufferIndex, flipMode, flipArg);
+    }
     auto* port = driver->GetPort(handle);
     if (!port) {
         LOG_ERROR(Lib_VideoOut, "Invalid handle = {}", handle);
@@ -180,6 +191,11 @@ s32 PS4_SYSV_ABI sceVideoOutSubmitFlip(s32 handle, s32 bufferIndex, s32 flipMode
     if (!driver->SubmitFlip(port, bufferIndex, flipArg)) {
         LOG_ERROR(Lib_VideoOut, "Flip queue is full");
         return ORBIS_VIDEO_OUT_ERROR_FLIP_QUEUE_FULL;
+    }
+
+    if (trace) {
+        LOG_INFO(Lib_VideoOut, "BACHATA_FLIP_TRACE stage=guest_submit_accepted index={} arg={}",
+                 bufferIndex, flipArg);
     }
 
     return ORBIS_OK;
@@ -299,6 +315,7 @@ s32 PS4_SYSV_ABI sceVideoOutGetResolutionStatus(s32 handle, SceVideoOutResolutio
 s32 PS4_SYSV_ABI sceVideoOutOpen(Libraries::UserService::OrbisUserServiceUserId userId, s32 busType,
                                  s32 index, const void* param) {
     LOG_INFO(Lib_VideoOut, "called, busType = {}", busType);
+    // The social screen bus only exists next to a headset.
     ASSERT(busType == SCE_VIDEO_OUT_BUS_TYPE_MAIN ||
            (busType == SCE_VIDEO_OUT_BUS_TYPE_AUX_SOCIAL_SCREEN &&
             Core::Vr::Runtime::Instance().IsHeadsetConnected()));
@@ -345,16 +362,29 @@ s32 PS4_SYSV_ABI sceVideoOutGetBufferLabelAddress(s32 handle, uintptr_t* label_a
     return 16;
 }
 
-s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void** unk) {
+s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void** unk,
+                             u32 flip_token) {
+    if (eop_register_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
+        LOG_INFO(Lib_VideoOut,
+                 "BACHATA_FLIP_TRACE stage=eop_register handle={} index={} mode={} arg={}", handle,
+                 buf_id, mode, flip_arg);
+    }
     auto* port = driver->GetPort(handle);
     if (!port) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
     }
 
     Platform::IrqC::Instance()->RegisterOnce(
-        Platform::InterruptId::GfxFlip, [=](Platform::InterruptId irq) {
+        Platform::InterruptId::GfxFlip, flip_token, [=](Platform::InterruptId irq) {
+            if (eop_irq_traces.fetch_add(1, std::memory_order_relaxed) < 32) {
+                LOG_INFO(Lib_VideoOut,
+                         "BACHATA_FLIP_TRACE stage=eop_irq index={} arg={} label={}", buf_id,
+                         flip_arg, port->buffer_labels[buf_id]);
+            }
             ASSERT_MSG(irq == Platform::InterruptId::GfxFlip, "An unexpected IRQ occured");
             if (port->buffer_labels[buf_id] != 1) {
+                // The guest may not have written the label yet when the flip
+                // IRQ fires; real hardware completes the flip regardless.
                 LOG_WARNING(Lib_VideoOut,
                             "Out of order flip IRQ: index={} label={} prev_index={} pending={}",
                             buf_id, port->buffer_labels[buf_id], port->prev_index,
@@ -505,10 +535,6 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceVideoOutSetBufferAttribute);
     LIB_FUNCTION("6kPnj51T62Y", "libSceVideoOut", 1, "libSceVideoOut",
                  sceVideoOutGetResolutionStatus);
-    LIB_FUNCTION("8XGijEoThE0", "libSceVideoOut", 1, "libSceVideoOut",
-                 sceVideoOutGetResolutionStatus); // sceVideoOutSysGetResolutionStatus
-    LIB_FUNCTION("Ek+VR4lcJQI", "libSceVideoOut", 1, "libSceVideoOut",
-                 sceVideoOutAddVblankEvent); // sceVideoOutSysAddVblankEvent
     LIB_FUNCTION("Up36PTk687E", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutOpen);
     LIB_FUNCTION("zgXifHT9ErY", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutIsFlipPending);
     LIB_FUNCTION("N5KDtkIjjJ4", "libSceVideoOut", 1, "libSceVideoOut",
@@ -517,7 +543,6 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceVideoOutGetBufferLabelAddress);
     LIB_FUNCTION("uquVH4-Du78", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutClose);
     LIB_FUNCTION("1FZBKy8HeNU", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutGetVblankStatus);
-    LIB_FUNCTION("d1AjT2uZJn0", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutGetVblankStatus);
     LIB_FUNCTION("kGVLc3htQE8", "libSceVideoOut", 1, "libSceVideoOut",
                  sceVideoOutGetDeviceCapabilityInfo);
     LIB_FUNCTION("j6RaAUlaLv0", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutWaitVblank);

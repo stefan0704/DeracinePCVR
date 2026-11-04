@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm> // std::max, std::min
+#include "common/logging/log.h"
 #include "core/libraries/avplayer/avplayer_file_streamer.h"
+#include "core/libraries/avplayer/avplayer_read.h"
 
 extern "C" {
 #include <libavformat/avio.h>
@@ -10,7 +12,7 @@ extern "C" {
 #include <libavutil/mem.h>
 }
 
-constexpr u32 AVPLAYER_AVIO_BUFFER_SIZE = 4096;
+constexpr u32 AVPLAYER_AVIO_BUFFER_SIZE = 64 * 1024;
 
 namespace Libraries::AvPlayer {
 
@@ -35,6 +37,7 @@ bool AvPlayerFileStreamer::Init(std::string_view path) {
         return false;
     }
     m_file_size = m_file_replacement.size(ptr);
+    LOG_INFO(Lib_AvPlayer, "Guest file streamer opened {} size={}", path, m_file_size);
     // avio_buffer is deallocated in `avio_context_free`
     const auto avio_buffer = reinterpret_cast<u8*>(av_malloc(AVPLAYER_AVIO_BUFFER_SIZE));
     m_avio_context =
@@ -58,8 +61,16 @@ s32 AvPlayerFileStreamer::ReadPacket(void* opaque, u8* buffer, s32 size) {
     const auto read_offset = self->m_file_replacement.read_offset;
     const auto ptr = self->m_file_replacement.object_ptr;
     const auto bytes_read = read_offset(ptr, buffer, self->m_position, size);
-    if (bytes_read == 0 && size != 0) {
+    const auto status = AvPlayerClassifyRead(bytes_read, static_cast<u32>(size), self->m_position,
+                                             self->m_file_size);
+    if (status == AvPlayerReadStatus::Eof) {
         return AVERROR_EOF;
+    }
+    if (status == AvPlayerReadStatus::IoError) {
+        LOG_ERROR(Lib_AvPlayer,
+                  "AvPlayer AVIO mid-file zero read pos={} req={} file_size={}",
+                  self->m_position, size, self->m_file_size);
+        return AVERROR(EIO);
     }
     self->m_position += bytes_read;
     return bytes_read;

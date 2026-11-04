@@ -12,11 +12,13 @@
 namespace Libraries::AvPlayer {
 
 s32 PS4_SYSV_ABI sceAvPlayerAddSource(AvPlayerHandle handle, const char* filename) {
-    LOG_TRACE(Lib_AvPlayer, "filename = {}", filename);
+    LOG_INFO(Lib_AvPlayer, "filename = {}", filename ? filename : "(null)");
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->AddSource(filename);
+    const auto result = handle->AddSource(filename);
+    LOG_INFO(Lib_AvPlayer, "AddSource result = {:#x}", static_cast<u32>(result));
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerAddSourceEx(AvPlayerHandle handle, AvPlayerUriType uri_type,

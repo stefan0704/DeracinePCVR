@@ -5,15 +5,34 @@
 
 #include <algorithm>
 #include <mutex>
+#include <optional>
+#include <span>
+#include <variant>
 #include <vector>
 #include "core/libraries/kernel/threads.h"
 #include "core/module.h"
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+#include "core/guest_cpu/guest_cpu.h"
+#endif
 
 namespace Core {
 
 struct DynamicModuleInfo;
 class Linker;
 class MemoryManager;
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+class FexGuestCpuBackend;
+namespace GuestCpu {
+class HleGuestBridge;
+class HleVeneerAllocator;
+}
+// Shared by Linker runtime and the FEX dynamic executable-range callback.
+// HLE veneers are host mmap pages not present in the guest VMM.
+struct FexExecutableQueryContext final {
+    MemoryManager* memory{};
+    GuestCpu::HleVeneerAllocator* veneers{};
+};
+#endif
 
 struct OrbisKernelMemParam {
     u64 size;
@@ -131,14 +150,6 @@ public:
         }
     }
 
-    void LoadLibcInternal() {
-        for (auto& module : m_modules) {
-            if (module->name.contains("libSceLibcInternal")) {
-                module->Start(0, nullptr, nullptr);
-            }
-        }
-    }
-
     void SetHeapAPI(void* func[]) {
         heap_api = reinterpret_cast<AppHeapAPI>(func);
     }
@@ -161,8 +172,23 @@ public:
                  Loader::SymbolRecord* return_info);
     void Execute(const std::vector<std::string>& args = {});
     void DebugDump();
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+    using GuestFunctionResult = std::variant<u64, GuestExecutionFailure>;
+    GuestFunctionResult RunGuestFunction(VAddr entry, std::span<const u64> arguments = {},
+                                         VAddr stack_top = 0);
+    GuestFunctionResult RunGuestMain(EntryParams* params);
+    /// Makes an emulator function that no module imports callable from guest code. Returns the
+    /// guest address to call or return to, or 0 on failure.
+    VAddr AllocateHleVeneer(std::shared_ptr<GuestCpu::HleCallAdapter> adapter,
+                            std::string_view name);
+#endif
 
 private:
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+    std::optional<GuestExecutionFailure> InitializeFexRuntime();
+#endif
+    void* CallAppHeapMalloc(u64 size);
+    void CallAppHeapFree(void* pointer);
     MemoryManager* memory;
     Libraries::Kernel::Thread main_thread;
     std::mutex mutex;
@@ -173,6 +199,16 @@ private:
     AppHeapAPI heap_api{};
     std::vector<std::unique_ptr<Module>> m_modules;
     Loader::SymbolsResolver m_hle_symbols{};
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+    // Must outlive m_fex_bridge; bridge holds a raw pointer into this for
+    // dynamic executable-range queries (guest VMM + late HLE veneers).
+    FexExecutableQueryContext m_fex_exec_query{};
+    std::unique_ptr<GuestCpu::HleVeneerAllocator> m_hle_veneers;
+    std::unique_ptr<GuestCpu::HleGuestBridge> m_fex_bridge;
+    std::unique_ptr<FexGuestCpuBackend> m_fex_backend;
+    std::mutex m_fex_runtime_mutex;
+    VAddr m_fex_exit_veneer{};
+#endif
 };
 
 } // namespace Core

@@ -5,6 +5,7 @@
 #include <mutex>
 
 #include "common/logging/log.h"
+#include "core/guest_cpu/guest_watchdog.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/hmd/hmd.h"
 #include "core/libraries/hmd/hmd_error.h"
@@ -266,6 +267,8 @@ static s32 sceHmdReprojectionStartInternal(const OrbisHmdReprojectionParam* para
                  param->uv[1].offset_x, param->uv[1].offset_y);
     }
 
+    Core::GuestCpu::NoteGuestProgress();
+
     // How fast the title delivers frames is the number that matters for comfort; report it now
     // and then.
     {
@@ -360,6 +363,8 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojection2dVrParam
         LOG_INFO(Lib_Hmd, "2dVr UV: scale {:.6f}/{:.6f}, offset {:.6f}/{:.6f}",
                  param->uv.scale_x, param->uv.scale_y, param->uv.offset_x, param->uv.offset_y);
     }
+
+    Core::GuestCpu::NoteGuestProgress();
 
     {
         using Clock = std::chrono::steady_clock;

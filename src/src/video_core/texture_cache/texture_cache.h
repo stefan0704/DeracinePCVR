@@ -3,20 +3,18 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <mutex>
-#include <optional>
 #include <thread>
 #include <unordered_set>
-#include <absl/container/flat_hash_map.h>
-#include <absl/container/flat_hash_set.h>
 #include <boost/container/small_vector.hpp>
 #include <queue>
 #include <tsl/robin_map.h>
 
 #include "common/lru_cache.h"
-#include "common/multi_level_page_table.h"
 #include "common/slot_vector.h"
 #include "shader_recompiler/resource.h"
+#include "video_core/multi_level_page_table.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
 #include "video_core/texture_cache/image_view.h"
@@ -27,48 +25,26 @@ namespace AmdGpu {
 struct Liverpool;
 }
 
-namespace Vulkan {
-class Runtime;
-}
-
 namespace VideoCore {
 
 class BufferCache;
 class PageManager;
 
 class TextureCache {
+    // Default values for garbage collection
     static constexpr s64 DEFAULT_PRESSURE_GC_MEMORY = 1_GB + 512_MB;
     static constexpr s64 DEFAULT_CRITICAL_GC_MEMORY = 3_GB;
     static constexpr s64 TARGET_GC_THRESHOLD = 8_GB;
 
-    struct BucketEntry {
-        u32 key;
-        u32 size;
-        ImageId id;
-
-        bool Overlaps(VAddr addr, size_t size) const noexcept {
-            const VAddr base = Address();
-            return base < (addr + size) && addr < (base + this->size);
-        }
-
-        VAddr Address() const noexcept {
-            return VAddr(key) << 8;
-        }
-    };
-
-    struct alignas(64) Bucket {
-        SmallVector<BucketEntry, 4, u32> entries;
-    };
-    static_assert(sizeof(Bucket) == 64);
+    using ImageIds = boost::container::small_vector<ImageId, 16>;
 
     struct Traits {
-        using Entry = Bucket;
-        static constexpr size_t ADDRESS_SPACE_BITS = 40;
-        static constexpr size_t L1_BITS = 10;
-        static constexpr size_t PAGE_BITS = 18;
-        static constexpr bool NULL_CHECK = true;
+        using Entry = ImageIds;
+        static constexpr size_t AddressSpaceBits = 40;
+        static constexpr size_t FirstLevelBits = 10;
+        static constexpr size_t PageBits = 20;
     };
-    using PageTable = Common::MultiLevelPageTable<Traits>;
+    using PageTable = MultiLevelPageTable<Traits>;
 
 public:
     enum class BindingType : u32 {
@@ -77,13 +53,6 @@ public:
         RenderTarget,
         DepthTarget,
         VideoOut,
-    };
-
-    enum class DownloadMemoryFlags : u32 {
-        None = 0,
-        Sync = 1 << 0,
-        Priority = 1 << 1,
-        DiscardBufferCache = 1 << 2,
     };
 
     struct ImageDesc {
@@ -105,12 +74,10 @@ public:
         ImageDesc(const Libraries::VideoOut::BufferAttributeGroup& group, VAddr cpu_address)
             : info{group, cpu_address}, type{BindingType::VideoOut} {}
     };
-    static_assert(std::is_trivially_destructible_v<ImageDesc>);
 
 public:
     TextureCache(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
-                 Vulkan::Runtime& runtime, AmdGpu::Liverpool* liverpool, BufferCache& buffer_cache,
-                 PageManager& page_manager);
+                 AmdGpu::Liverpool* liverpool, BufferCache& buffer_cache, PageManager& tracker);
     ~TextureCache();
 
     TileManager& GetTileManager() noexcept {
@@ -123,9 +90,6 @@ public:
     /// Marks an image as dirty if it exists at the provided address.
     void InvalidateMemoryFromGPU(VAddr address, size_t max_size);
 
-    /// Marks all images as maybe GPU dirty within the provided range.
-    void MarkAsMaybeGpuDirty(VAddr addr, size_t size);
-
     /// Evicts any images that overlap the unmapped range.
     void UnmapMemory(VAddr cpu_addr, size_t size);
 
@@ -134,6 +98,14 @@ public:
 
     /// Retrieves the image handle of the image with the provided attributes.
     [[nodiscard]] ImageId FindImage(ImageDesc& desc, bool exact_fmt = false);
+
+    /// FindImage for a texture a shader reads or writes, `index` the binding of it (a mip level
+    /// where the shader has one binding for each), with `desc` filled in as for FindImage. What
+    /// an earlier draw that bound the same T# the same way was given, while no image has come
+    /// or gone since: most draws bind textures that a draw before them bound as well.
+    [[nodiscard]] ImageId FindTextureImage(const AmdGpu::Image& sharp,
+                                           const Shader::ImageResource& resource, u32 index,
+                                           ImageDesc& desc);
 
     /// Retrieves image whose address matches provided
     [[nodiscard]] ImageId FindImageFromRange(VAddr address, size_t size, bool ensure_valid = true);
@@ -147,14 +119,12 @@ public:
     /// Retrieves the depth target with specified properties
     [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc);
 
-    /// Links the stencil plane of a depth surface to its depth image.
-    void AssociateStencil(ImageId depth_id, const ImageInfo& depth_info);
-
     /// Updates image contents if it was modified by CPU.
     void UpdateImage(ImageId image_id) {
+        std::scoped_lock lock{mutex};
         Image& image = slot_images[image_id];
-        TouchImage(image);
         TrackImage(image_id);
+        TouchImage(image);
         RefreshImage(image);
     }
 
@@ -168,6 +138,10 @@ public:
     [[nodiscard]] ImageId ResolveDepthOverlap(const ImageInfo& requested_info, BindingType binding,
                                               ImageId cache_img_id);
 
+    /// Recreates a backing whose dimension cannot support the requested view.
+    [[nodiscard]] ImageId ResolveDimensionOverlap(const ImageInfo& requested_info,
+                                                  ImageId cache_img_id);
+
     /// Creates a new image with provided image info and copies subresources from image_id
     [[nodiscard]] ImageId ExpandImage(const ImageInfo& info, ImageId image_id);
 
@@ -176,8 +150,7 @@ public:
 
     /// Retrieves the sampler that matches the provided S# descriptor.
     [[nodiscard]] vk::Sampler GetSampler(const AmdGpu::Sampler& sampler,
-                                         AmdGpu::BorderColorBuffer border_color_base,
-                                         bool is_depth);
+                                         AmdGpu::BorderColorBuffer border_color_base);
 
     /// Retrieves the image with the specified id.
     [[nodiscard]] Image& GetImage(ImageId id) {
@@ -191,12 +164,21 @@ public:
         return slot_image_views[id];
     }
 
+    /// Visits every image in the cache. Debugging aid.
+    template <typename Func>
+    void ForEachImage(Func&& func) {
+        std::scoped_lock lock{mutex};
+        for (Image& image : slot_images) {
+            func(image);
+        }
+    }
+
     /// Get the associated depth stencil image if it is still valid.
     ImageId GetAssociatedDepth(Image& image) {
         if (!image.depth_id) {
             return {};
         }
-        if (slot_images.IsAllocated(image.depth_id)) {
+        if (slot_images.is_allocated(image.depth_id)) {
             auto& depth_image = slot_images[image.depth_id];
             if (depth_image.image_uid == image.depth_uid &&
                 depth_image.flags & ImageFlagBits::Registered) {
@@ -208,51 +190,22 @@ public:
         return {};
     }
 
-    enum class MetaType {
-        CMask,
-        FMask,
-        HTile,
-    };
-
-    struct MetaDataInfo {
-        MetaType type;
-        ImageId owner_id{};
-        u64 owner_uid{};
-        u32 num_samples = 1;
-        s32 clear_mask = -1;
-    };
-
-    /// Returns metadata information if the specified address belongs to a live image.
-    std::optional<MetaDataInfo> GetMetaInfo(VAddr address) const {
-        const auto it = surface_metas.find(address);
-        if (it == surface_metas.end()) {
-            return std::nullopt;
-        }
-        const auto& meta = it->second;
-        if (!meta.owner_id || !slot_images.IsAllocated(meta.owner_id)) {
-            return std::nullopt;
-        }
-        const auto& owner = slot_images[meta.owner_id];
-        if (owner.image_uid != meta.owner_uid || False(owner.flags & ImageFlagBits::Registered)) {
-            return std::nullopt;
-        }
-        return meta;
+    /// Returns true if the specified address is a metadata surface.
+    bool IsMeta(VAddr address) const {
+        return surface_metas.contains(address);
     }
 
-    /// Returns meta type if the specified address is a metadata surface.
-    std::optional<MetaType> IsMeta(VAddr address) const {
-        auto it = surface_metas.find(address);
-        if (it != surface_metas.end()) {
-            return it->second.type;
-        }
-        return std::nullopt;
+    /// Returns true if the specified address is the HTILE surface of a depth target.
+    bool IsHtile(VAddr address) const {
+        const auto& it = surface_metas.find(address);
+        return it != surface_metas.end() && it.value().type == MetaDataInfo::Type::HTile;
     }
 
     /// Returns true if a slice of the specified metadata surface has been cleared.
     bool IsMetaCleared(VAddr address, u32 slice) const {
         const auto& it = surface_metas.find(address);
         if (it != surface_metas.end()) {
-            return it->second.clear_mask & (1u << slice);
+            return it.value().clear_mask & (1u << slice);
         }
         return false;
     }
@@ -261,7 +214,7 @@ public:
     bool ClearMeta(VAddr address) {
         auto it = surface_metas.find(address);
         if (it != surface_metas.end()) {
-            it->second.clear_mask = u32(-1);
+            it.value().clear_mask = u32(-1);
             return true;
         }
         return false;
@@ -272,9 +225,9 @@ public:
         auto it = surface_metas.find(address);
         if (it != surface_metas.end()) {
             if (is_clear) {
-                it->second.clear_mask |= 1u << slice;
+                it.value().clear_mask |= 1u << slice;
             } else {
-                it->second.clear_mask &= ~(1u << slice);
+                it.value().clear_mask &= ~(1u << slice);
             }
             return true;
         }
@@ -288,8 +241,8 @@ public:
     void ForEachImageInRegion(VAddr cpu_addr, size_t size, Func&& func) {
         using FuncReturn = typename std::invoke_result<Func, ImageId, Image&>::type;
         static constexpr bool BOOL_BREAK = std::is_same_v<FuncReturn, bool>;
-        const u64 first_page = cpu_addr >> Traits::PAGE_BITS;
-        ForEachPage(cpu_addr, size, [this, first_page, cpu_addr, size, func](u64 page) {
+        ImageIds images;
+        ForEachPage(cpu_addr, size, [this, &images, cpu_addr, size, func](u64 page) {
             const auto it = page_table.find(page);
             if (it == nullptr) {
                 if constexpr (BOOL_BREAK) {
@@ -298,40 +251,30 @@ public:
                     return;
                 }
             }
-            for (const auto& entry : it->entries) {
-                const u64 base_page = entry.Address() >> Traits::PAGE_BITS;
-                if (page != std::max(first_page, base_page)) {
+            for (const ImageId image_id : *it) {
+                Image& image = slot_images[image_id];
+                if (image.flags & ImageFlagBits::Picked) {
                     continue;
                 }
-                if (!entry.Overlaps(cpu_addr, size)) {
+                if (!image.Overlaps(cpu_addr, size)) {
                     continue;
                 }
-                Image& image = slot_images[entry.id];
+                image.flags |= ImageFlagBits::Picked;
+                images.push_back(image_id);
                 if constexpr (BOOL_BREAK) {
-                    if (func(entry.id, image)) {
+                    if (func(image_id, image)) {
                         return true;
                     }
                 } else {
-                    func(entry.id, image);
+                    func(image_id, image);
                 }
             }
             if constexpr (BOOL_BREAK) {
                 return false;
             }
         });
-    }
-
-    template <typename Func>
-    void ForEachImageWithAddress(VAddr cpu_addr, Func&& func) {
-        const auto it = page_table.find(cpu_addr >> Traits::PAGE_BITS);
-        if (it == nullptr) {
-            return;
-        }
-        const u32 key = u32(cpu_addr >> 8);
-        for (const auto& entry : it->entries) {
-            if (entry.key == key) {
-                func(entry.id, slot_images[entry.id]);
-            }
+        for (const ImageId image_id : images) {
+            slot_images[image_id].flags &= ~ImageFlagBits::Picked;
         }
     }
 
@@ -340,8 +283,8 @@ private:
     template <typename Func>
     static void ForEachPage(PAddr addr, size_t size, Func&& func) {
         static constexpr bool RETURNS_BOOL = std::is_same_v<std::invoke_result<Func, u64>, bool>;
-        const u64 page_end = (addr + size - 1) >> Traits::PAGE_BITS;
-        for (u64 page = addr >> Traits::PAGE_BITS; page <= page_end; ++page) {
+        const u64 page_end = (addr + size - 1) >> Traits::PageBits;
+        for (u64 page = addr >> Traits::PageBits; page <= page_end; ++page) {
             if constexpr (RETURNS_BOOL) {
                 if (func(page)) {
                     break;
@@ -352,9 +295,17 @@ private:
         }
     }
 
+    /// Gets or creates a null image for a particular format.
+    ImageId GetNullImage(vk::Format format);
+
     /// Copies image memory back to CPU.
-    void DownloadImageMemory(ImageId image_id,
-                             DownloadMemoryFlags flags = DownloadMemoryFlags::None);
+    void DownloadImageMemory(ImageId image_id);
+
+    /// Thread function for copying downloaded images out to CPU memory.
+    void DownloadedImagesThread(const std::stop_token& token);
+
+    /// Create an image from the given parameters
+    [[nodiscard]] ImageId InsertImage(const ImageInfo& info, VAddr cpu_addr);
 
     /// Register image in the page table
     void RegisterImage(ImageId image);
@@ -364,69 +315,87 @@ private:
 
     /// Track CPU reads and writes for image
     void TrackImage(ImageId image_id);
+    void TrackImageHead(ImageId image_id);
+    void TrackImageTail(ImageId image_id);
 
     /// Stop tracking CPU reads and writes for image
     void UntrackImage(ImageId image_id);
     void UntrackImageHead(ImageId image_id);
     void UntrackImageTail(ImageId image_id);
 
-    /// Marks the image CPU dirty if the guest wrote to its untracked head or tail page.
-    void MarkDirtyIfEdgesModified(Image& image);
-
     void MarkAsMaybeDirty(ImageId image_id, Image& image);
-
-    void RegisterMeta(VAddr address, MetaDataInfo info);
-    void UnregisterMeta(VAddr address, u64 owner_uid);
 
     /// Removes the image and any views/surface metas that reference it.
     void DeleteImage(ImageId image_id);
 
     /// Touch the image in the LRU cache.
-    void TouchImage(Image& image);
+    void TouchImage(const Image& image);
 
-    /// Removes image from the cache and schedules it for deletion.
     void FreeImage(ImageId image_id) {
-        {
-            std::scoped_lock lk{slot_images[image_id].mutex};
-            UntrackImage(image_id);
-        }
+        UntrackImage(image_id);
         UnregisterImage(image_id);
         DeleteImage(image_id);
     }
 
-    void GarbageCollectImages();
-    void GarbageCollectSamplers();
-
 private:
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
-    Vulkan::Runtime& runtime;
     AmdGpu::Liverpool* liverpool;
     BufferCache& buffer_cache;
-    PageManager& page_manager;
-    PageTable page_table;
-    Common::SlotVector<Image> slot_images;
-    Common::SlotVector<ImageView> slot_image_views;
-    Common::SlotVector<Sampler> slot_samplers;
+    PageManager& tracker;
     BlitHelper blit_helper;
     TileManager tile_manager;
-    absl::flat_hash_map<u64, SamplerId> samplers;
-    absl::flat_hash_set<ImageId> download_images;
+    Common::SlotVector<Image> slot_images;
+
+    /// What FindImage answered the last time it was asked for an image that was there exactly
+    /// as described. A draw asks for the same textures as the draw before it more often than
+    /// not, and looking through every page an image covers for candidates each time is what
+    /// made the question expensive. An answer holds until any image is added or removed.
+    struct FoundImage {
+        VAddr guest_address{};
+        u32 guest_size{};
+        Extent3D size{};
+        SubresourceExtent resources{};
+        vk::Format pixel_format{};
+        AmdGpu::ImageType type{};
+        bool exact_fmt{};
+        ImageId image_id{};
+        u64 registrations{};
+    };
+    std::array<FoundImage, 1024> found_images{};
+    /// What a texture binding was found to be (FindTextureImage).
+    struct FoundTexture {
+        std::array<u64, 4> sharp{};
+        u64 use{};
+        u64 registrations{};
+        ImageId image_id{};
+        ImageDesc desc{};
+    };
+    std::array<FoundTexture, 256> found_textures{};
+    u64 registrations{1};
+    Common::SlotVector<ImageView> slot_image_views;
+    tsl::robin_map<u64, Sampler> samplers;
+    tsl::robin_map<vk::Format, ImageId> null_images;
+    std::unordered_set<ImageId> download_images;
     u64 total_used_memory = 0;
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
     u64 critical_gc_memory = 0;
-    u64 total_used_samplers = 0;
-    u64 trigger_gc_samplers = 0;
-    u64 pressure_gc_samplers = 0;
-    u64 critical_gc_samplers = 0;
     u64 gc_tick = 0;
-    Common::LRUCache<Image> image_lru_cache;
-    Common::LRUCache<Sampler> sampler_lru_cache;
-    const bool readback_linear_images;
-    std::mutex download_images_mutex;
-    absl::flat_hash_map<VAddr, MetaDataInfo> surface_metas;
+    Common::LeastRecentlyUsedCache<ImageId, u64> lru_cache;
+    bool readback_linear_images;
+    PageTable page_table;
+    std::mutex mutex;
+    struct MetaDataInfo {
+        enum class Type {
+            CMask,
+            FMask,
+            HTile,
+        };
+        Type type;
+        s32 clear_mask = -1;
+    };
+    tsl::robin_map<VAddr, MetaDataInfo> surface_metas;
 };
-DECLARE_ENUM_FLAG_OPERATORS(TextureCache::DownloadMemoryFlags)
 
 } // namespace VideoCore

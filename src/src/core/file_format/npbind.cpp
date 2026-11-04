@@ -9,6 +9,8 @@
 #include "npbind.h"
 
 bool NPBindFile::Load(const std::string& path) {
+    Clear(); // Clear any existing data
+
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f)
         return false;
@@ -22,18 +24,12 @@ bool NPBindFile::Load(const std::string& path) {
     if (!f.read(reinterpret_cast<char*>(buf.data()), sz))
         return false;
 
-    return Load(std::span<const u8>{buf});
-}
-
-bool NPBindFile::Load(std::span<const u8> data) {
-    Clear(); // Clear any existing data
-
-    const u64 size = data.size();
+    const u64 size = buf.size();
     if (size < sizeof(NpBindHeader))
         return false;
 
     // Read header
-    memcpy(&m_header, data.data(), sizeof(NpBindHeader));
+    memcpy(&m_header, buf.data(), sizeof(NpBindHeader));
     if (m_header.magic != NPBIND_MAGIC)
         return false;
 
@@ -57,14 +53,14 @@ bool NPBindFile::Load(std::span<const u8> data) {
             if (offset + 4 > size)
                 return false;
 
-            memcpy(&e.type, &data[offset], 2);
-            memcpy(&e.size, &data[offset + 2], 2);
+            memcpy(&e.type, &buf[offset], 2);
+            memcpy(&e.size, &buf[offset + 2], 2);
             offset += 4;
 
             if (offset + e.size > size)
                 return false;
 
-            e.data.assign(data.begin() + offset, data.begin() + offset + e.size);
+            e.data.assign(buf.begin() + offset, buf.begin() + offset + e.size);
             offset += e.size;
             return true;
         };
@@ -93,7 +89,7 @@ bool NPBindFile::Load(std::span<const u8> data) {
     // Read digest if available
     if (size >= 20) {
         // Digest is typically the last 20 bytes, independent of offset
-        memcpy(m_digest, &data[size - 20], 20);
+        memcpy(m_digest, &buf[size - 20], 20);
     } else {
         memset(m_digest, 0, 20);
     }

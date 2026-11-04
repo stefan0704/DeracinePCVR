@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
 #include <atomic>
-#include <bit>
 #include <cstdint>
+#include <cstdio>
 #include <SDL3/SDL_events.h>
 #include <imgui.h>
 
@@ -68,6 +67,7 @@ void Initialize(const ::Vulkan::Instance& instance, const Frontend::WindowSDL& w
     const auto config_path = GetUserPath(Common::FS::PathType::UserDir) / "imgui.ini";
     const auto log_path = GetUserPath(Common::FS::PathType::LogDir) / "imgui_log.txt";
 
+    std::fprintf(stderr, "BACHATA_IMGUI_CTX\n");
     CreateContext();
     ImGuiIO& io = GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -91,31 +91,37 @@ void Initialize(const ::Vulkan::Instance& instance, const Frontend::WindowSDL& w
     font_cfg.OversampleV = 1;
     io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
     const int console_language = EmulatorSettings.GetConsoleLanguage();
-    io.FontDefault = FontStack::AddPrimaryUiFont(io.Fonts, 32.0f, console_language, font_cfg, true);
+    // Nobody reads this interface when there is no window, and the full set of fonts makes for
+    // an atlas of over a hundred megabytes, twice while it is uploaded. That is memory a headset
+    // does not have to spare, so there the same fonts are built small and without the large
+    // East Asian character sets. Their number and order stay: other code refers to them by index.
+    const bool headless = window.GetWindowInfo().type == Frontend::WindowSystemType::Headless;
+    io.FontDefault =
+        FontStack::AddPrimaryUiFont(io.Fonts, 32.0f, console_language, font_cfg, !headless);
 
     io.Fonts->AddFontFromMemoryCompressedTTF(imgui_font_proggyvector_regular_compressed_data,
                                              imgui_font_proggyvector_regular_compressed_size,
                                              32.0f);
 
     // Avoid exploding atlas size on Metal/MoltenVK when CJK fallback is enabled.
-    FontStack::AddPrimaryUiFont(io.Fonts, 128.0f, console_language, font_cfg, false);
+    FontStack::AddPrimaryUiFont(io.Fonts, headless ? 32.0f : 128.0f, console_language, font_cfg,
+                                false);
 
     // Big Picture
-    FontStack::AddPrimaryUiFont(ImGui::GetIO().Fonts, 64.0f, EmulatorSettings.GetConsoleLanguage(),
-                                font_cfg, true);
+    FontStack::AddPrimaryUiFont(ImGui::GetIO().Fonts, headless ? 32.0f : 64.0f,
+                                EmulatorSettings.GetConsoleLanguage(), font_cfg, !headless);
 
-    // Let the atlas size grow to the largest image the device can create,
-    // floored to the power of two the packer requires.
-    const u32 max_dim = instance.GetPhysicalDevice().getProperties().limits.maxImageDimension2D;
-    const int atlas_max = static_cast<int>(std::bit_floor(std::max<u32>(max_dim, 512u)));
-    io.Fonts->TexMaxWidth = atlas_max;
-    io.Fonts->TexMaxHeight = atlas_max;
+    std::fprintf(stderr, "BACHATA_IMGUI_FONTS_BUILD\n");
+    io.Fonts->Build();
+    std::fprintf(stderr, "BACHATA_IMGUI_FONTS_READY\n");
 
     io.FontGlobalScale = 0.5f;
 
     StyleColorsDark();
 
+    std::fprintf(stderr, "BACHATA_IMGUI_DEVTOOLS\n");
     ::Core::Devtools::Layer::SetupSettings();
+    std::fprintf(stderr, "BACHATA_IMGUI_SDL\n");
     Sdl::Init(window.GetSDLWindow());
 
     const Vulkan::InitInfo vk_info{
@@ -133,9 +139,13 @@ void Initialize(const ::Vulkan::Instance& instance, const Frontend::WindowSDL& w
         .allocator = allocator,
         .check_vk_result_fn = &CheckVkResult,
     };
+    std::fprintf(stderr, "BACHATA_IMGUI_VK\n");
     Vulkan::Init(vk_info);
+    std::fprintf(stderr, "BACHATA_IMGUI_VK_READY\n");
 
+    std::fprintf(stderr, "BACHATA_IMGUI_TEX\n");
     TextureManager::StartWorker();
+    std::fprintf(stderr, "BACHATA_IMGUI_TEX_READY\n");
 
     char label[32];
     ImFormatString(label, IM_ARRAYSIZE(label), "WindowOverViewport_%08X", GetMainViewport()->ID);
@@ -237,7 +247,6 @@ ImGuiID NewFrame(bool is_reusing_frame) {
 
     Sdl::NewFrame(is_reusing_frame);
     ImGui::NewFrame();
-    SetKeyOwner(ImGuiKey_GamepadFaceUp, ImHashStr("shadps4/pad"));
 
     ImGuiWindowFlags flags =
         ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar;
@@ -257,8 +266,6 @@ void Render(const vk::CommandBuffer& cmdbuf, const vk::ImageView& image_view,
             const vk::Extent2D& extent) {
     ImGui::Render();
     ImDrawData* draw_data = GetDrawData();
-    // Font atlas uploads are recorded ahead of the render pass that samples them.
-    Vulkan::UpdateTextures(*draw_data, cmdbuf);
     if (draw_data->CmdListsCount == 0) {
         return;
     }
@@ -294,8 +301,7 @@ void Render(const vk::CommandBuffer& cmdbuf, const vk::ImageView& image_view,
 }
 
 bool MustKeepDrawing() {
-    return std::ranges::any_of(layers, [](Layer* layer) { return layer->ShouldKeepDrawing(); }) ||
-           change_layers.size() > 1;
+    return layers.size() > 1 || change_layers.size() > 1 || DebugState.IsShowingDebugMenuBar();
 }
 
 } // namespace Core

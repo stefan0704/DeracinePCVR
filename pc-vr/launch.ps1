@@ -874,7 +874,9 @@ if ($fovSetting -ne "100") { $env:SHADPS4_VR_FOV = $fovSetting }
 if ((Setting "fov_of" "headset") -ne "psvr") { $env:SHADPS4_VR_FOV_OF = "headset" }
 # fps: the most frames a second. (pace, the older way to say it: refreshes of the headset a
 # frame is given, 1 or more.)
-$env:SHADPS4_VR_FPS_CAP = Setting "fps" "60"
+$fpsSetting = Setting "fps" "60"
+$env:SHADPS4_VR_FPS_CAP = $fpsSetting
+$env:SHADPS4_VR_REFRESH_RATE = $fpsSetting
 $pace = Setting "pace" ""
 if ($pace -eq "1") { $env:SHADPS4_VR_FASTEST_PACE = "1"; $env:SHADPS4_VR_FPS_CAP = "" } elseif ($pace -ne "" -and $pace -ne "2") { $env:SHADPS4_VR_PACE = $pace }
 if ((Setting "headset" "1") -eq "0") { $env:SHADPS4_OPENXR = "0" }
@@ -906,11 +908,24 @@ if (Test-Path $cfgPath) {
             $cfgJson.GPU.readbacks_mode = $rbMode
             $changed = $true
         }
-        $copyGpuSetting = Setting "copy_gpu_buffers" "1"
+        $copyGpuSetting = Setting "copy_gpu_buffers" "0"
         if ($copyGpuSetting -ne "") {
             $copyVal = ($copyGpuSetting -eq "1" -or $copyGpuSetting -eq "true")
             if ($cfgJson.GPU.copy_gpu_buffers -ne $copyVal) {
                 $cfgJson.GPU.copy_gpu_buffers = $copyVal
+                $changed = $true
+            }
+        }
+        $rbLinear = (Setting "readback_linear_images" "1") -ne "0"
+        if ($null -ne $cfgJson.GPU.readback_linear_images_enabled -and $cfgJson.GPU.readback_linear_images_enabled -ne $rbLinear) {
+            $cfgJson.GPU.readback_linear_images_enabled = $rbLinear
+            $changed = $true
+        }
+        if ($null -ne $cfgJson.GPU.vblank_frequency) {
+            $fpsVal = 60
+            [void][int]::TryParse($fpsSetting, [ref]$fpsVal)
+            if ($cfgJson.GPU.vblank_frequency -ne $fpsVal) {
+                $cfgJson.GPU.vblank_frequency = $fpsVal
                 $changed = $true
             }
         }

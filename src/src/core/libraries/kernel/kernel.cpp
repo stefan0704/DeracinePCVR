@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <thread>
@@ -27,8 +27,7 @@
 #include "core/libraries/kernel/threads/pthread.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
-#include "core/libraries/net/net.h"
-#include "core/libraries/net/net_kernel.h"
+#include "core/libraries/network/sys_net.h"
 
 #ifdef _WIN64
 #include <Rpc.h>
@@ -36,13 +35,15 @@
 #include <uuid/uuid.h>
 #endif
 #include <common/singleton.h>
+#include <core/libraries/network/net_error.h>
+#include <core/libraries/network/sockets.h>
 #include <core/linker.h>
 #include "aio.h"
 
 namespace Libraries::Kernel {
 
 static u64 g_stack_chk_guard = 0xDEADBEEF54321ABC; // dummy return
-char const* g_environment[64];
+static std::vector<char*> g_environ{};
 static const char* g_progname = "eboot.bin";
 
 boost::asio::io_context io_context;
@@ -67,6 +68,11 @@ static void KernelServiceThread(std::stop_token stoken) {
         {
             std::unique_lock lock{m_asio_req};
             Common::CondvarWait(cv_asio_req, lock, stoken, [] { return asio_requests != 0; });
+            // The requests are taken before the work is run, not cleared afterwards: a timer
+            // armed just as run() was returning had its request wiped and was then serviced by
+            // nobody until some unrelated request came along. A title that paces its frames
+            // with such a timer (and re-arms it only once it has fired) stopped for good.
+            asio_requests = 0;
         }
         if (stoken.stop_requested()) {
             break;
@@ -74,21 +80,10 @@ static void KernelServiceThread(std::stop_token stoken) {
 
         io_context.run();
         io_context.restart();
-
-        asio_requests = 0;
     }
 }
 
 static PS4_SYSV_ABI void stack_chk_fail() {
-    void* caller = __builtin_return_address(0);
-    auto* linker = Common::Singleton<Core::Linker>::Instance();
-    auto* mod = linker ? linker->FindByAddress(reinterpret_cast<VAddr>(caller)) : nullptr;
-    if (mod) {
-        LOG_CRITICAL(Lib_Kernel, "called from {:p} (module: {}, offset: {:#x})", caller, mod->name,
-                     reinterpret_cast<VAddr>(caller) - mod->GetBaseAddress());
-    } else {
-        LOG_CRITICAL(Lib_Kernel, "called from {:p} (unknown module)", caller);
-    }
     UNREACHABLE();
 }
 
@@ -113,55 +108,63 @@ s32 PS4_SYSV_ABI sceKernelError(s32 posix_error) {
     return posix_error + ORBIS_KERNEL_ERROR_UNKNOWN;
 }
 
-s32 NativeToPosixErrno(s32 const e) {
+void SetPosixErrno(s32 e) {
     // Some error numbers are different between supported OSes
     switch (e) {
-    case 0:
-        return 0;
     case EPERM:
-        return POSIX_EPERM;
+        g_posix_errno = POSIX_EPERM;
         break;
     case ENOENT:
-        return POSIX_ENOENT;
-        break;
-    case EINTR:
-        return POSIX_EINTR;
+        g_posix_errno = POSIX_ENOENT;
         break;
     case EDEADLK:
-        return POSIX_EDEADLK;
+        g_posix_errno = POSIX_EDEADLK;
         break;
     case ENOMEM:
-        return POSIX_ENOMEM;
+        g_posix_errno = POSIX_ENOMEM;
         break;
     case EACCES:
-        return POSIX_EACCES;
+        g_posix_errno = POSIX_EACCES;
         break;
     case EFAULT:
-        return POSIX_EFAULT;
+        g_posix_errno = POSIX_EFAULT;
         break;
     case EINVAL:
-        return POSIX_EINVAL;
+        g_posix_errno = POSIX_EINVAL;
         break;
     case ENOSPC:
-        return POSIX_ENOSPC;
+        g_posix_errno = POSIX_ENOSPC;
         break;
     case ERANGE:
-        return POSIX_ERANGE;
+        g_posix_errno = POSIX_ERANGE;
         break;
     case EAGAIN:
-        return POSIX_EAGAIN;
+        g_posix_errno = POSIX_EAGAIN;
         break;
     case ETIMEDOUT:
-        return POSIX_ETIMEDOUT;
+        g_posix_errno = POSIX_ETIMEDOUT;
         break;
     default:
         LOG_WARNING(Kernel, "Unhandled errno {}", e);
-        return e;
+        g_posix_errno = e;
     }
 }
 
-void SetPosixErrno(s32 e) {
-    g_posix_errno = NativeToPosixErrno(e);
+static u64 g_mspace_atomic_id_mask = 0;
+static u64 g_mstate_table[64] = {0};
+
+struct HeapInfoInfo {
+    u64 size = sizeof(HeapInfoInfo);
+    u32 flag;
+    u32 getSegmentInfo;
+    u64* mspace_atomic_id_mask;
+    u64* mstate_table;
+};
+
+void PS4_SYSV_ABI sceLibcHeapGetTraceInfo(HeapInfoInfo* info) {
+    info->mspace_atomic_id_mask = &g_mspace_atomic_id_mask;
+    info->mstate_table = g_mstate_table;
+    info->getSegmentInfo = 0;
 }
 
 struct OrbisKernelUuid {
@@ -237,6 +240,27 @@ s32 PS4_SYSV_ABI sceKernelGetGPI() {
 s32 PS4_SYSV_ABI sceKernelSetGPO() {
     LOG_DEBUG(Kernel, "called");
     return ORBIS_OK;
+}
+
+// Per-thread atexit registration bookkeeping. Used by the runtime's TLS/exit
+// path; on retail (non-devkit) it is inert. Accepted and ignored so the guest
+// doesn't fall through to an ENOSYS that some callers dereference as a pointer.
+void* PS4_SYSV_ABI _sceKernelSetThreadAtexitCount(s32 count) {
+    LOG_TRACE(Kernel, "(STUBBED) count={}", count);
+    return nullptr;
+}
+
+void* PS4_SYSV_ABI _sceKernelSetThreadAtexitReport(s32 report) {
+    LOG_TRACE(Kernel, "(STUBBED) report={}", report);
+    return nullptr;
+}
+
+// AddressSanitizer new-replacement hook. When the sanitizer is disabled (the
+// normal case for shipped games) this must return nullptr to signal "no
+// override", not ENOSYS — callers treat the result as a function pointer.
+void* PS4_SYSV_ABI sceKernelGetSanitizerNewReplaceExternal() {
+    LOG_TRACE(Kernel, "(STUBBED) sanitizer disabled, returning nullptr");
+    return nullptr;
 }
 
 s32 PS4_SYSV_ABI sceKernelGetAllowedSdkVersionOnSystem(s32* ver) {
@@ -319,27 +343,11 @@ s32 PS4_SYSV_ABI sceKernelTitleWorkaroundIsEnabled(OrbisKernelTitleWorkaround* t
 }
 
 s32 PS4_SYSV_ABI sceKernelGetProcessType(s32 pid) {
-    LOG_DEBUG(Lib_Kernel, "called, pid: {}", pid);
-    if (pid != GLOBAL_PID && pid != -1 && pid != 0) {
-        return ORBIS_KERNEL_ERROR_ESRCH;
+    LOG_ERROR(Lib_Kernel, "(STUBBED) called, pid: {}", pid);
+    if (pid != GLOBAL_PID) {
+        return ORBIS_KERNEL_ERROR_ENOSYS;
     }
-    return ORBIS_KERNEL_PROCESS_TYPE_BIG_APP;
-}
-
-s32 PS4_SYSV_ABI __sys_regmgr_call(u32 op, u32 key, void* result, void* value, u64 len) {
-    LOG_ERROR(Lib_Kernel, "(STUBBED) called, op: {:#x}, key: {}, len: {}", op, key, len);
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceKernelGetOpenPsId(void* psid) {
-    LOG_TRACE(Lib_Kernel, "called, psid = {}", fmt::ptr(psid));
-    if (!psid) {
-        return POSIX_EINVAL;
-    }
-    static constexpr u8 default_psid[16] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
-    std::memcpy(psid, default_psid, sizeof(default_psid));
-    return ORBIS_OK;
+    return 0;
 }
 
 // Nominally: long sysconf(int name);
@@ -464,11 +472,7 @@ u64 PS4_SYSV_ABI posix_sysconf(s32 name) {
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     service_thread = std::jthread{KernelServiceThread};
-
-    static char const** kernel_environ = g_environment;
-
-    // Before any socket exists: net ids are file descriptors from the kernel's table.
-    Libraries::Net::InstallKernelIntegration();
+    g_environ.emplace_back(nullptr);
 
     Libraries::Kernel::RegisterFileSystem(sym);
     Libraries::Kernel::RegisterTime(sym);
@@ -483,8 +487,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     Libraries::Kernel::RegisterCoredump(sym);
 
     LIB_OBJ("f7uOxY9mM1U", "libkernel", 1, "libkernel", &g_stack_chk_guard);
-    LIB_OBJ("+2thxYZ4syk", "libkernel", 1, "libkernel", &kernel_environ);
-    LIB_OBJ("djxxOmW6-aw", "libkernel", 1, "libkernel", &g_progname);
+    LIB_OBJ("+2thxYZ4syk", "libkernel", 1, "libkernel", &g_environ)
+    LIB_OBJ("djxxOmW6-aw", "libkernel", 1, "libkernel", &g_progname)
     LIB_FUNCTION("D4yla3vx4tY", "libkernel", 1, "libkernel", sceKernelError);
     LIB_FUNCTION("YeU23Szo3BM", "libkernel", 1, "libkernel", sceKernelGetAllowedSdkVersionOnSystem);
     LIB_FUNCTION("Mv1zUObHvXI", "libkernel", 1, "libkernel", sceKernelGetSystemSwVersion);
@@ -495,18 +499,18 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("PfccT7qURYE", "libkernel", 1, "libkernel", kernel_ioctl);
     LIB_FUNCTION("wW+k21cmbwQ", "libkernel", 1, "libkernel", kernel_ioctl);
     LIB_FUNCTION("JGfTMBOdUJo", "libkernel", 1, "libkernel", sceKernelGetFsSandboxRandomWord);
-    LIB_FUNCTION("JGfTMBOdUJo", "libkernel_psmkit", 1, "libkernel",
-                 sceKernelGetFsSandboxRandomWord);
     LIB_FUNCTION("6xVpy0Fdq+I", "libkernel", 1, "libkernel", _sigprocmask);
     LIB_FUNCTION("Xjoosiw+XPI", "libkernel", 1, "libkernel", sceKernelUuidCreate);
     LIB_FUNCTION("Ou3iL1abvng", "libkernel", 1, "libkernel", stack_chk_fail);
     LIB_FUNCTION("9BcDykPmo1I", "libkernel", 1, "libkernel", __Error);
     LIB_FUNCTION("k+AXqu2-eBc", "libkernel", 1, "libkernel", posix_getpagesize);
     LIB_FUNCTION("k+AXqu2-eBc", "libScePosix", 1, "libkernel", posix_getpagesize);
-    LIB_FUNCTION("7NwggrWJ5cA", "libkernel", 1, "libkernel", __sys_regmgr_call);
 
     LIB_FUNCTION("mkawd0NA9ts", "libkernel", 1, "libkernel", posix_sysconf);
     LIB_FUNCTION("mkawd0NA9ts", "libScePosix", 1, "libkernel", posix_sysconf);
+
+    LIB_FUNCTION("NWtTN10cJzE", "libSceLibcInternalExt", 1, "libSceLibcInternal",
+                 sceLibcHeapGetTraceInfo);
 
     // network
     LIB_FUNCTION("XVL8So3QJUk", "libkernel", 1, "libkernel", Libraries::Net::sys_connect);
@@ -527,7 +531,6 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("Ez8xjo9UF4E", "libkernel", 1, "libkernel", Libraries::Net::sys_recv);
     LIB_FUNCTION("lUk6wrGXyMw", "libkernel", 1, "libkernel", Libraries::Net::sys_recvfrom);
 
-    LIB_FUNCTION("TUuiYS2kE8s", "libScePosix", 1, "libkernel", Libraries::Net::sys_shutdown);
     LIB_FUNCTION("TU-d9PfIHPM", "libScePosix", 1, "libkernel", Libraries::Net::sys_socket);
     LIB_FUNCTION("fZOeZIOEmLw", "libScePosix", 1, "libkernel", Libraries::Net::sys_send);
     LIB_FUNCTION("oBr313PppNE", "libScePosix", 1, "libkernel", Libraries::Net::sys_sendto);
@@ -552,8 +555,17 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("ca7v6Cxulzs", "libkernel", 1, "libkernel", sceKernelSetGPO);
     LIB_FUNCTION("iKJMWrAumPE", "libkernel", 1, "libkernel", getargc);
     LIB_FUNCTION("FJmglmTMdr4", "libkernel", 1, "libkernel", getargv);
-    LIB_FUNCTION("DLORcroUqbc", "libkernel", 1, "libkernel", sceKernelGetOpenPsId);
-    LIB_FUNCTION("DLORcroUqbc", "libSceOpenPsId", 1, "libkernel", sceKernelGetOpenPsId);
+
+    // Dark Souls Remastered (CUSA08692) calls these three libkernel NIDs early
+    // in init. They resolve only to STUB entries in aerolib, so on the FEX backend
+    // they fell back to UnsupportedHleCallAdapter returning ENOSYS(38); the guest
+    // then treated that value as a pointer and tripped an UNREACHABLE -> SIGTRAP
+    // -> exit 133 within ~400ms of launch. Registering the no-op shims above stops
+    // the deref. See diagnose-bachata skill: "HLE gap (the Fios2 class of bug)".
+    LIB_FUNCTION("pB-yGZ2nQ9o", "libkernel", 1, "libkernel", _sceKernelSetThreadAtexitCount);
+    LIB_FUNCTION("WhCc1w3EhSI", "libkernel", 1, "libkernel", _sceKernelSetThreadAtexitReport);
+    LIB_FUNCTION("bnZxYgAFeA0", "libkernel", 1, "libkernel",
+                 sceKernelGetSanitizerNewReplaceExternal);
 }
 
 } // namespace Libraries::Kernel

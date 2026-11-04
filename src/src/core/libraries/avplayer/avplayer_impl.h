@@ -9,12 +9,14 @@
 #include <memory>
 #include <mutex>
 #include <string_view>
+#include <vector>
 
 namespace Libraries::AvPlayer {
 
 class AvPlayer {
 public:
     AvPlayer(const AvPlayerInitData& data);
+    ~AvPlayer();
 
     s32 PostInit(const AvPlayerPostInitData& data);
     s32 AddSource(std::string_view filename);
@@ -48,10 +50,15 @@ private:
     static u64 PS4_SYSV_ABI SizeFile(void* handle);
 
     AvPlayerInitData StubInitData(const AvPlayerInitData& data);
+    bool EnsureFileCacheLocked();
 
     AvPlayerInitData m_init_data{};
     AvPlayerInitData m_init_data_original{};
     std::mutex m_file_io_mutex{};
+    void* m_file_read_bounce{};
+    u32 m_file_read_bounce_size{};
+    std::vector<u8> m_file_cache{};
+    bool m_file_cache_ready{};
 
     std::unique_ptr<AvPlayerState> m_state{};
 };

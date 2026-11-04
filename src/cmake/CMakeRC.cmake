@@ -641,6 +641,25 @@ function(cmrc_add_resources name)
 endfunction()
 
 function(_cmrc_generate_intermediate_cpp lib_ns symbol outfile infile)
+    set(_BACHATA_ALLOWED_RESOURCE_FILES
+        src/resources/big_picture/controller.png
+        src/resources/big_picture/experimental.png
+        src/resources/big_picture/folder.png
+        src/resources/big_picture/graphics.png
+        src/resources/big_picture/log.png
+        src/resources/big_picture/profiles.png
+        src/resources/big_picture/settings.png
+        src/resources/big_picture/trophy.png
+        src/resources/bronze.png
+        src/resources/gold.png
+        src/resources/platinum.png
+        src/resources/shadps4.png
+        src/resources/silver.png
+        src/resources/trophy.wav)
+    file(RELATIVE_PATH bachata_resource_input "${CMAKE_SOURCE_DIR}" "${infile}")
+    if(NOT bachata_resource_input IN_LIST _BACHATA_ALLOWED_RESOURCE_FILES)
+        message(FATAL_ERROR "CMakeRC input is not a declared Bachata embedded resource: ${infile}")
+    endif()
     add_custom_command(
         # This is the file we will generate
         OUTPUT "${outfile}"

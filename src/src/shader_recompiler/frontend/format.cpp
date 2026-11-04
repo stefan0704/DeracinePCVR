@@ -470,7 +470,8 @@ constexpr std::array<InstFormat, 32> InstructionFormatSMRD = {{
     {InstClass::ScalarMemUt, InstCategory::ScalarMemory, 1, 1, ScalarType::Undefined,
      ScalarType::Undefined},
     // 30 = S_MEMTIME
-    {InstClass::ScalarMemUt, InstCategory::ScalarMemory, 0, 1, ScalarType::Any, ScalarType::Uint64},
+    {InstClass::ScalarMemUt, InstCategory::ScalarMemory, 1, 1, ScalarType::Undefined,
+     ScalarType::Undefined},
     // 31 = S_DCACHE_INV
     {InstClass::ScalarMemUt, InstCategory::ScalarMemory, 1, 1, ScalarType::Undefined,
      ScalarType::Undefined},
@@ -4032,11 +4033,11 @@ constexpr std::array<InstFormat, 114> InstructionFormatMUBUF = {{
     {},
     {},
     // 112 = BUFFER_WBINVL1_SC
-    {InstClass::VectorMemL1Cache, InstCategory::VectorMemory, 0, 0, ScalarType::Any,
-     ScalarType::Any},
+    {InstClass::VectorMemL1Cache, InstCategory::VectorMemory, 4, 1, ScalarType::Undefined,
+     ScalarType::Undefined},
     // 113 = BUFFER_WBINVL1
-    {InstClass::VectorMemL1Cache, InstCategory::VectorMemory, 0, 0, ScalarType::Any,
-     ScalarType::Any},
+    {InstClass::VectorMemL1Cache, InstCategory::VectorMemory, 4, 1, ScalarType::Undefined,
+     ScalarType::Undefined},
 }};
 
 constexpr std::array<InstFormat, 8> InstructionFormatMTBUF = {{

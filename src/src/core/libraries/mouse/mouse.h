@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include "common/enum.h"
 #include "common/ring_buffer_queue.h"
+#include "core/libraries/mouse/mouse_open_param.h"
 #include "core/libraries/system/userservice.h"
 
 namespace Core::Loader {
@@ -22,17 +22,6 @@ struct OrbisMouseData {
     s32 wheel;
     s32 tilt;
     u8 reserve[8];
-};
-
-enum class MouseOpenBehaviour : u8 {
-    Normal = 0,
-    Merged = 1,
-};
-DECLARE_ENUM_FLAG_OPERATORS(MouseOpenBehaviour);
-
-struct OrbisMouseOpenParam {
-    MouseOpenBehaviour flag;
-    u8 reserve[7];
 };
 
 extern RingBufferQueue<OrbisMouseData> mouse_states[2];

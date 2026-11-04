@@ -13,8 +13,6 @@
 namespace Vulkan {
 class Instance;
 class Frame;
-class Semaphore;
-using MasterSemaphore = Semaphore;
 }
 
 namespace Vulkan::HostPasses {
@@ -38,7 +36,7 @@ public:
         float centre_radius = 0.0f;
     };
 
-    void Create(const Instance& instance, Semaphore* work_semaphore,
+    void Create(const Instance& instance, MasterSemaphore* master_semaphore,
                 vk::Format surface_format);
 
     /// An input image and the part of the output frame it is drawn into.
@@ -78,7 +76,7 @@ private:
     static constexpr std::array<vk::DescriptorPoolSize, 1> pool_sizes{{
         {vk::DescriptorType::eCombinedImageSampler, 64},
     }};
-    std::optional<DescriptorHeap> desc_heap;
+    DescriptorHeap desc_heap;
     vk::UniquePipeline pipeline{};
     vk::UniquePipeline overlay_pipeline{};
     vk::UniquePipelineLayout pipeline_layout{};

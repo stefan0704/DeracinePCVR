@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
@@ -79,8 +79,8 @@ int PS4_SYSV_ABI sceRtcConvertLocalTimeToUtc(OrbisRtcTick* pTickLocal, OrbisRtcT
         (pTickLocal->tick - UNIX_EPOCH_TICKS) / 1000000, 0xffffffff, &seconds, &timezone, 0);
 
     if (convertValue >= 0) {
-        convertValue = sceRtcTickAddMinutes(pTickUtc, pTickLocal,
-                                            -(timezone.tz_minuteswest + timezone.tz_dsttime));
+        convertValue = sceRtcTickAddMinutes(
+            pTickUtc, pTickLocal, -(((timezone.tz_dsttime * 60) - timezone.tz_minuteswest)));
     }
 
     return convertValue;
@@ -95,7 +95,8 @@ int PS4_SYSV_ABI sceRtcConvertUtcToLocalTime(OrbisRtcTick* pTickUtc, OrbisRtcTic
     Kernel::OrbisKernelTimezone timeZone;
     int returnValue = Kernel::sceKernelGettimezone(&timeZone);
 
-    sceRtcTickAddMinutes(pTickLocal, pTickUtc, timeZone.tz_minuteswest + timeZone.tz_dsttime);
+    sceRtcTickAddMinutes(pTickLocal, pTickUtc,
+                         -(timeZone.tz_minuteswest - (timeZone.tz_dsttime * 60)));
 
     return 0;
 }
@@ -262,7 +263,7 @@ int PS4_SYSV_ABI sceRtcFormatRFC2822LocalTime(char* pszDateTime, const OrbisRtcT
     Kernel::sceKernelGettimezone(&timeZone);
 
     return sceRtcFormatRFC2822(pszDateTime, pTickUtc,
-                               timeZone.tz_minuteswest + timeZone.tz_dsttime);
+                               -(timeZone.tz_minuteswest - (timeZone.tz_dsttime * 60)));
 }
 
 int PS4_SYSV_ABI sceRtcFormatRFC3339(char* pszDateTime, const OrbisRtcTick* pTickUtc,
@@ -278,7 +279,7 @@ int PS4_SYSV_ABI sceRtcFormatRFC3339LocalTime(char* pszDateTime, const OrbisRtcT
     Kernel::sceKernelGettimezone(&timeZone);
 
     return sceRtcFormatRFC3339(pszDateTime, pTickUtc,
-                               timeZone.tz_minuteswest + timeZone.tz_dsttime);
+                               -(timeZone.tz_minuteswest - (timeZone.tz_dsttime * 60)));
 }
 
 int PS4_SYSV_ABI sceRtcFormatRFC3339Precise(char* pszDateTime, const OrbisRtcTick* pTickUtc,
@@ -384,7 +385,7 @@ int PS4_SYSV_ABI sceRtcFormatRFC3339PreciseLocalTime(char* pszDateTime,
     Kernel::sceKernelGettimezone(&timeZone);
 
     return sceRtcFormatRFC3339Precise(pszDateTime, pTickUtc,
-                                      timeZone.tz_minuteswest + timeZone.tz_dsttime);
+                                      -(timeZone.tz_minuteswest - (timeZone.tz_dsttime * 60)));
 }
 
 int PS4_SYSV_ABI sceRtcGetCurrentAdNetworkTick(OrbisRtcTick* pTick) {
@@ -438,7 +439,7 @@ int PS4_SYSV_ABI sceRtcGetCurrentClockLocalTime(OrbisRtcDateTime* pTime) {
         Kernel::OrbisKernelTimespec clocktime;
 
         // calculate total timezone offset for converting UTC to local time
-        int tzOffset = timeZone.tz_minuteswest + timeZone.tz_dsttime;
+        uint64_t tzOffset = -(timeZone.tz_minuteswest - (timeZone.tz_dsttime * 60));
 
         if (returnValue >= 0) {
             OrbisRtcTick newTick;

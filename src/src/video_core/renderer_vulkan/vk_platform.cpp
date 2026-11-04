@@ -13,6 +13,8 @@
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
+#include <algorithm>
+#include <string>
 #include <vector>
 #include <fmt/ranges.h>
 
@@ -39,23 +41,23 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(
     vk::DebugUtilsMessageSeverityFlagBitsEXT severity, vk::DebugUtilsMessageTypeFlagsEXT type,
     const vk::DebugUtilsMessengerCallbackDataEXT* callback_data, void* user_data) {
 
-    Common::Log::Level level{};
+    spdlog::level level{};
     switch (severity) {
     case vk::DebugUtilsMessageSeverityFlagBitsEXT::eError:
-        level = Common::Log::Level::Error;
+        level = spdlog::level::err;
         break;
     case vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning:
-        level = Common::Log::Level::Info;
+        level = spdlog::level::info;
         break;
     case vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo:
     case vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose:
-        level = Common::Log::Level::Debug;
+        level = spdlog::level::debug;
         break;
     default:
-        level = Common::Log::Level::Info;
+        level = spdlog::level::info;
     }
 
-    LOG_GENERIC(Render_Vulkan, level, "{}: {}",
+    LOG_GENERIC(Common::Log::Class::Render_Vulkan, level, "{}: {}",
                 callback_data->pMessageIdName ? callback_data->pMessageIdName : "<null>",
                 callback_data->pMessage ? callback_data->pMessage : "<null>");
 
@@ -63,8 +65,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(
 }
 
 vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& emu_window) {
+    std::fprintf(stderr, "BACHATA_SURFACE_ENTER\n");
     const auto& window_info = emu_window.GetWindowInfo();
     vk::SurfaceKHR surface{};
+
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
     if (window_info.type == Frontend::WindowSystemType::Windows) {
@@ -124,6 +128,7 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& e
         UNREACHABLE();
     }
 
+    std::fprintf(stderr, "BACHATA_SURFACE_READY\n");
     return surface;
 }
 
@@ -155,16 +160,6 @@ static auto GetLayerExtensions(std::vector<const char*>&& extensions,
         extensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
     }
 
-    #ifdef ENABLE_OPENXR_HOST
-    static std::vector<std::string> headset_extensions;
-    headset_extensions = Core::Vr::OpenXrHost::Instance().VulkanInstanceExtensions();
-    for (const std::string& name : headset_extensions) {
-        if (std::ranges::none_of(extensions,
-                                 [&](const char* enabled) { return name == enabled; })) {
-            extensions.push_back(name.c_str());
-        }
-    }
-#endif
     return extensions;
 }
 
@@ -216,6 +211,19 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
     if (enable_debug_utils) {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
+
+#ifdef ENABLE_OPENXR_HOST
+    // What the runtime of the machine's own headset wants of an instance it is handed
+    // pictures by. (The names have to outlive the making of the instance.)
+    static std::vector<std::string> headset_extensions;
+    headset_extensions = Core::Vr::OpenXrHost::Instance().VulkanInstanceExtensions();
+    for (const std::string& name : headset_extensions) {
+        if (std::ranges::none_of(extensions,
+                                 [&](const char* present) { return name == present; })) {
+            extensions.push_back(name.c_str());
+        }
+    }
+#endif
 
     // Sanitize extension list
     std::erase_if(extensions, [&](const char* extension) -> bool {

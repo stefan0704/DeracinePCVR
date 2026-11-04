@@ -6,11 +6,13 @@
 #include <algorithm>
 #include <mutex>
 #include <optional>
+#include <deque>
+#include <unordered_map>
 #include <vector>
-#include <queue>
 
 #include "common/types.h"
 #include "core/libraries/audio/audioout.h"
+#include "core/libraries/audio3d/audio3d_spatializer.h"
 
 namespace Core::Loader {
 class SymbolsResolver;
@@ -69,6 +71,8 @@ struct OrbisAudio3dPcm {
     u32 num_samples;
 };
 
+// Numbered as titles pass them: a position arrives as attribute 3 with twelve bytes, a gain as
+// attribute 5 with four.
 enum class OrbisAudio3dAttributeId : u32 {
     ORBIS_AUDIO3D_ATTRIBUTE_PCM = 1,
     ORBIS_AUDIO3D_ATTRIBUTE_PRIORITY = 2,
@@ -99,18 +103,18 @@ struct AudioData {
 };
 
 struct ObjectState {
-    std::deque<AudioData> pcm_queue;
+    /// The block of sound the title set since the port last advanced, mono.
+    std::vector<float> pcm;
+    bool has_pcm{};
+    ObjectPlacement placement;
+    u32 priority{};
+    /// Played as it is, without being placed in space.
+    bool passthrough{};
+    /// Not a sound at a place but one channel of an ambisonic sound field, or -1.
+    s32 ambisonic_channel{-1};
+    Spatializer spatializer;
+    /// Attributes that are accepted but not acted on.
     std::unordered_map<u32, std::vector<u8>> persistent_attributes;
-    bool unreserved{false};
-};
-
-// An AudioOut port opened by the game through sceAudio3dAudioOutOpen
-struct AssociatedAudioOutPort {
-    s32 handle{-1};
-    u32 buffer_bytes{0};
-    u32 samples_per_buffer{0};
-    bool is_float{false};
-    std::deque<std::vector<u8>> pending;
 };
 
 struct Port {
@@ -118,8 +122,8 @@ struct Port {
     OrbisAudio3dOpenParameters parameters{};
     // Opened lazily on the first sceAudio3dPortPush call.
     s32 audio_out_handle{-1};
-    // AudioOut ports explicitly opened by the game via sceAudio3dAudioOutOpen.
-    std::vector<AssociatedAudioOutPort> audioout_ports;
+    // Handles explicitly opened by the game via sceAudio3dAudioOutOpen.
+    std::vector<s32> audioout_handles;
     // Reserved objects and their state.
     std::unordered_map<OrbisAudio3dObjectId, ObjectState> objects;
     // increasing counter for generating unique object IDs within this port.
@@ -128,6 +132,10 @@ struct Port {
     std::deque<AudioData> bed_queue;
     // Mixed stereo frames ready to be consumed by sceAudio3dPortPush.
     std::deque<AudioData> mixed_queue;
+    // Working memory and state of the mix.
+    std::vector<float> mix_buffer;
+    float limiter_gain{1.0f};
+    u64 advance_count{};
 };
 
 struct Audio3dState {

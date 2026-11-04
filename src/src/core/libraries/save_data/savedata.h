@@ -151,9 +151,7 @@ int PS4_SYSV_ABI sceSaveDataMountInternal();
 int PS4_SYSV_ABI sceSaveDataMountSys();
 int PS4_SYSV_ABI sceSaveDataPromote5();
 int PS4_SYSV_ABI sceSaveDataRebuildDatabase();
-using OrbisSaveDataEventCallback = void(PS4_SYSV_ABI*)(const OrbisSaveDataEvent*, void*);
-Error PS4_SYSV_ABI sceSaveDataRegisterEventCallback(OrbisSaveDataEventCallback callback,
-                                                    void* userdata);
+int PS4_SYSV_ABI sceSaveDataRegisterEventCallback();
 Error PS4_SYSV_ABI sceSaveDataRestoreBackupData(const OrbisSaveDataRestoreBackupData* restore);
 int PS4_SYSV_ABI sceSaveDataRestoreBackupDataForCdlg();
 int PS4_SYSV_ABI sceSaveDataRestoreLoadSaveDataMemory();
@@ -184,7 +182,7 @@ Error PS4_SYSV_ABI sceSaveDataTransferringMount(const OrbisSaveDataTransferringM
 Error PS4_SYSV_ABI sceSaveDataUmount(const OrbisSaveDataMountPoint* mountPoint);
 int PS4_SYSV_ABI sceSaveDataUmountSys();
 Error PS4_SYSV_ABI sceSaveDataUmountWithBackup(const OrbisSaveDataMountPoint* mountPoint);
-Error PS4_SYSV_ABI sceSaveDataUnregisterEventCallback();
+int PS4_SYSV_ABI sceSaveDataUnregisterEventCallback();
 int PS4_SYSV_ABI sceSaveDataUpload();
 int PS4_SYSV_ABI Func_02E4C4D201716422();
 

@@ -13,6 +13,7 @@
 #include "common/types.h"
 #include "core/address_space.h"
 #include "core/libraries/kernel/memory.h"
+#include "core/memory_map_generation.h"
 
 namespace Vulkan {
 class Rasterizer;
@@ -29,8 +30,6 @@ class MemoryMapViewer;
 namespace Core {
 
 constexpr u64 DEFAULT_MAPPING_BASE = 0x200000000;
-constexpr u64 GUEST_PAGE_BITS = 14;
-constexpr u64 GUEST_PAGE_SIZE = 1ULL << GUEST_PAGE_BITS;
 
 enum class MemoryProt : u32 {
     NoAccess = 0,
@@ -54,7 +53,6 @@ enum class MemoryMapFlags : u32 {
     Stack = 0x400,
     NoSync = 0x800,
     Anon = 0x1000,
-    System = 0x2000,
     NoCore = 0x20000,
     NoCoalesce = 0x400000,
 };
@@ -103,7 +101,6 @@ enum class VMAType : u32 {
     Stack = 6,
     Code = 7,
     File = 8,
-    System = 9,
 };
 
 struct VirtualMemoryArea {
@@ -155,20 +152,6 @@ struct VirtualMemoryArea {
         }
 
         return true;
-    }
-
-    void ForEachPhysArea(u64 offset, u64 size, auto&& func) {
-        if (size == 0) {
-            return;
-        }
-        const u64 end = offset + size;
-        auto it = std::prev(phys_areas.upper_bound(offset));
-        for (; it != phys_areas.end() && it->first < end; ++it) {
-            const auto& pma = it->second;
-            const u64 clip_start = std::max<u64>(it->first, offset);
-            const u64 clip_end = std::min<u64>(it->first + pma.size, end);
-            func(pma.base + (clip_start - it->first), clip_end - clip_start);
-        }
     }
 };
 
@@ -279,9 +262,16 @@ public:
 
     s32 UnmapMemory(VAddr virtual_addr, u64 size);
 
-    s32 QueryProtection(VAddr addr, void** start, void** end, u32* prot);
+    s32 QueryProtection(VAddr addr, void** start, void** end, u32* prot,
+                        u64* generation = nullptr);
+
+    [[nodiscard]] u64 MappingGeneration() const {
+        return mapping_generation.Load();
+    }
 
     s32 Protect(VAddr addr, u64 size, MemoryProt prot);
+
+    s32 SealGuestExecutable(VAddr addr, u64 size);
 
     s64 ProtectBytes(VAddr addr, VirtualMemoryArea& vma_base, u64 size, MemoryProt prot);
 
@@ -319,7 +309,7 @@ private:
         return std::prev(fmem_map.upper_bound(target));
     }
 
-    bool HasPhysicalBacking(const VirtualMemoryArea& vma) {
+    bool HasPhysicalBacking(VirtualMemoryArea vma) {
         return vma.type == VMAType::Direct || vma.type == VMAType::Flexible ||
                vma.type == VMAType::Pooled;
     }
@@ -352,6 +342,7 @@ private:
     VMAMap vma_map;
     Common::SharedFirstMutex mutex{};
     std::mutex unmap_mutex{};
+    MemoryMapGeneration mapping_generation{};
     u64 total_direct_size{};
     u64 total_flexible_size{};
     u64 flexible_usage{};

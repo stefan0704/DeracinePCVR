@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <boost/container/small_vector.hpp>
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/debug.h"
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "common/elf_info.h"
 #include "core/emulator_settings.h"
 #include "core/file_sys/fs.h"
@@ -34,16 +36,12 @@ MemoryManager::MemoryManager() {
     if (extra_dmem != 0) {
         total_size += extra_dmem * 1_MB;
     }
-    s32 extra_fmem = EmulatorSettings.GetExtraFmemInMBytes();
-    if (extra_fmem != 0) {
-        total_size += extra_fmem * 1_MB;
-    }
     total_direct_size = total_size;
     dmem_map.clear();
     dmem_map.emplace(0, PhysicalMemoryArea{0, total_direct_size});
 
     // Pre-initialize flexible backing
-    total_flexible_size = ORBIS_KERNEL_FLEXIBLE_MEMORY_SIZE + extra_fmem;
+    total_flexible_size = ORBIS_KERNEL_FLEXIBLE_MEMORY_SIZE;
     fmem_map.clear();
     fmem_map.emplace(total_size, PhysicalMemoryArea{total_size, total_flexible_size});
 
@@ -67,14 +65,6 @@ void MemoryManager::SetupMemoryRegions(u64 flexible_size, bool use_extended_mem1
                     "extraDmemInMbytes is {} MB! Old Direct Size: {:#x} -> New Direct Size: {:#x}",
                     extra_dmem, total_size, total_size + extra_dmem * 1_MB);
         total_size += extra_dmem * 1_MB;
-    }
-    s32 extra_fmem = EmulatorSettings.GetExtraFmemInMBytes();
-    if (extra_fmem != 0) {
-        LOG_WARNING(Kernel_Vmm, "extraFmemInMbytes is {} MB! Old Size: {:#x} -> New Size: {:#x}",
-                    extra_fmem, ORBIS_KERNEL_FLEXIBLE_MEMORY_SIZE,
-                    ORBIS_KERNEL_FLEXIBLE_MEMORY_SIZE + extra_fmem * 1_MB);
-        total_size += extra_fmem * 1_MB;
-        flexible_size += extra_fmem * 1_MB;
     }
     if (!use_extended_mem1 && is_neo) {
         total_size -= 256_MB;
@@ -101,30 +91,39 @@ void MemoryManager::SetupMemoryRegions(u64 flexible_size, bool use_extended_mem1
 }
 
 u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
-    static constexpr u64 MinSizeToClamp = 1_GB;
-    // Dont bother with clamping if the size is small so we dont pay a map lookup on every buffer.
-    if (size < MinSizeToClamp) {
-        return size;
+    if (size == 0) {
+        return 0;
     }
 
     std::shared_lock lk{mutex};
-    ASSERT_MSG(IsValidMapping(virtual_addr), "Attempted to access invalid address {:#x}",
-               virtual_addr);
+    if (vma_map.empty() || !IsValidMapping(virtual_addr)) {
+        return 0;
+    }
 
     // Clamp size to the remaining size of the current VMA.
     auto vma = FindVMA(virtual_addr);
-    u64 clamped_size = vma->second.base + vma->second.size - virtual_addr;
+    if (vma == vma_map.end() || !vma->second.IsMapped()) {
+        return 0;
+    }
+    const auto& first_area = vma->second;
+    if (virtual_addr < first_area.base || virtual_addr >= first_area.base + first_area.size) {
+        return 0;
+    }
+    u64 clamped_size = first_area.base + first_area.size - virtual_addr;
+    VAddr expected_next_base = first_area.base + first_area.size;
     ++vma;
 
-    // Keep adding to the size while there is contigious virtual address space.
-    while (vma != vma_map.end() && vma->second.IsMapped() && clamped_size < size) {
+    // Keep adding to the size while there is contiguous mapped virtual address space.
+    while (vma != vma_map.end() && vma->second.IsMapped() && vma->second.base == expected_next_base &&
+           clamped_size < size) {
         clamped_size += vma->second.size;
+        expected_next_base += vma->second.size;
         ++vma;
     }
     clamped_size = std::min(clamped_size, size);
 
     if (size != clamped_size) {
-        LOG_DEBUG(Kernel_Vmm, "Clamped requested buffer range addr={:#x}, size={:#x} to {:#x}",
+        LOG_TRACE(Kernel_Vmm, "Clamped requested buffer range addr={:#x}, size={:#x} to {:#x}",
                   virtual_addr, size, clamped_size);
     }
     return clamped_size;
@@ -146,19 +145,44 @@ void MemoryManager::SetPrtArea(u32 id, VAddr address, u64 size) {
 }
 
 void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
-    const auto& backing_pages = impl.BackingPages();
-    while (size) {
-        const u64 page = virtual_addr >> GUEST_PAGE_BITS;
-        const u64 offset_in_page = virtual_addr % GUEST_PAGE_SIZE;
-        const u64 copy_size = std::min<u64>(GUEST_PAGE_SIZE - offset_in_page, size);
-        if (auto* entry = backing_pages.find(page); entry && *entry) {
-            std::memcpy(dest, *entry + offset_in_page, copy_size);
+    if (size == 0) {
+        return;
+    }
+    std::shared_lock lk{mutex};
+    if (vma_map.empty() || !IsValidMapping(virtual_addr)) {
+        std::memset(dest, 0, size);
+        return;
+    }
+
+    auto vma = FindVMA(virtual_addr);
+    while (size > 0 && vma != vma_map.end()) {
+        const auto& area = vma->second;
+        // If the current virtual_addr is before this VMA (i.e. in an unmapped gap)
+        if (virtual_addr < area.base) {
+            const u64 gap_size = std::min<u64>(area.base - virtual_addr, size);
+            std::memset(dest, 0, gap_size);
+            size -= gap_size;
+            virtual_addr += gap_size;
+            dest += gap_size;
+            continue;
+        }
+
+        // virtual_addr is within [area.base, area.base + area.size)
+        const u64 offset_in_vma = virtual_addr - area.base;
+        const u64 copy_size = std::min<u64>(area.size - offset_in_vma, size);
+        if (area.IsMapped()) {
+            std::memcpy(dest, std::bit_cast<const u8*>(virtual_addr), copy_size);
         } else {
             std::memset(dest, 0, copy_size);
         }
         size -= copy_size;
         virtual_addr += copy_size;
         dest += copy_size;
+        ++vma;
+    }
+
+    if (size > 0) {
+        std::memset(dest, 0, size);
     }
 }
 
@@ -168,14 +192,13 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
 
-    // Pointers, copying a VMA also copies its phys_areas map
-    boost::container::small_vector<const VirtualMemoryArea*, 2> vmas_to_write;
+    std::vector<VirtualMemoryArea> vmas_to_write;
     auto current_vma = FindVMA(virtual_addr);
     while (current_vma->second.Overlaps(virtual_addr, size)) {
         if (!HasPhysicalBacking(current_vma->second)) {
             break;
         }
-        vmas_to_write.emplace_back(&current_vma->second);
+        vmas_to_write.emplace_back(current_vma->second);
         current_vma++;
     }
 
@@ -183,8 +206,7 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
         return false;
     }
 
-    for (const auto* vma_ptr : vmas_to_write) {
-        const auto& vma = *vma_ptr;
+    for (auto& vma : vmas_to_write) {
         auto start_in_vma = std::max<VAddr>(virtual_addr, vma.base) - vma.base;
         auto phys_handle = std::prev(vma.phys_areas.upper_bound(start_in_vma));
         for (; phys_handle != vma.phys_areas.end(); phys_handle++) {
@@ -196,7 +218,6 @@ bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
             u8* backing = impl.BackingBase() + phys_handle->second.base + start_in_dma;
             u64 copy_size = std::min<u64>(size, phys_handle->second.size - start_in_dma);
             memcpy(backing, data, copy_size);
-            data = static_cast<const u8*>(data) + copy_size;
             size -= copy_size;
         }
     }
@@ -248,7 +269,7 @@ PAddr MemoryManager::PoolExpand(PAddr search_start, PAddr search_end, u64 size, 
 PAddr MemoryManager::Allocate(PAddr search_start, PAddr search_end, u64 size, u64 alignment,
                               s32 memory_type) {
     std::scoped_lock lk{mutex, unmap_mutex};
-    alignment = alignment > 0 ? alignment : GUEST_PAGE_SIZE;
+    alignment = alignment > 0 ? alignment : 16_KB;
 
     auto dmem_area = FindDmemArea(search_start);
     auto mapping_start =
@@ -338,9 +359,7 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
                 const u64 phys_offset =
                     std::max<u64>(phys_mapping.base, phys_addr) - phys_mapping.base;
                 const VAddr addr_in_vma = mapping.base + offset_in_vma + phys_offset;
-                const u64 unmap_size =
-                    std::min<u64>(phys_mapping.base + phys_mapping.size, phys_addr + size) -
-                    (phys_mapping.base + phys_offset);
+                const u64 unmap_size = std::min<u64>(phys_mapping.size - phys_offset, size);
 
                 // Unmapping might erase from vma_map. We can't do it here.
                 remove_list.emplace_back(addr_in_vma, unmap_size);
@@ -357,6 +376,7 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
 
     // Acquire writer lock
     std::scoped_lock lk2{mutex};
+    auto mapping_mutation = mapping_generation.BeginMutation();
 
     for (const auto& [addr, size] : remove_list) {
         LOG_INFO(Kernel_Vmm, "Unmapping direct mapping {:#x} with size {:#x}", addr, size);
@@ -381,6 +401,7 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
 s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32 mtype) {
     std::scoped_lock lk{unmap_mutex};
     std::unique_lock lk2{mutex};
+    auto mapping_mutation = mapping_generation.BeginMutation();
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
 
@@ -452,8 +473,6 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
 
         // Perform an address space mapping for each physical area
         void* out_addr = impl.Map(current_addr, size_to_map, new_dmem_area.base);
-        rasterizer->RegisterMemory(current_addr, size_to_map);
-
         // Tracy memory tracking breaks from merging memory areas. Disabled for now.
         // TRACK_ALLOC(out_addr, size_to_map, "VMEM");
 
@@ -467,6 +486,7 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
     // Merge this VMA with similar nearby areas
     MergeAdjacent(vma_map, new_vma_handle);
 
+    mapping_mutation.Finish();
     lk2.unlock();
     if (IsValidGpuMapping(mapped_addr, size)) {
         rasterizer->MapMemory(mapped_addr, size);
@@ -563,11 +583,8 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
 
     if (True(flags & MemoryMapFlags::Fixed) && True(flags & MemoryMapFlags::NoOverwrite)) {
         // Perform necessary error checking for Fixed & NoOverwrite case
-        if (!IsValidMapping(virtual_addr, size)) {
-            LOG_ERROR(Kernel_Vmm, "addr = {:#x} size = {:#x} is outside the memory map",
-                      virtual_addr, size);
-            return ORBIS_KERNEL_ERROR_ENOMEM;
-        }
+        ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
+                   virtual_addr);
         auto vma = FindVMA(virtual_addr)->second;
         auto remaining_size = vma.base + vma.size - virtual_addr;
         if (!vma.IsFree() || remaining_size < size) {
@@ -576,7 +593,7 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
         }
     } else if (False(flags & MemoryMapFlags::Fixed)) {
         // Find a free virtual addr to map
-        alignment = alignment > 0 ? alignment : GUEST_PAGE_SIZE;
+        alignment = alignment > 0 ? alignment : 16_KB;
         virtual_addr = virtual_addr == 0 ? DEFAULT_MAPPING_BASE : virtual_addr;
         virtual_addr = SearchFree(virtual_addr, size, alignment);
         if (virtual_addr == -1) {
@@ -592,6 +609,7 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
 
     // Acquire writer lock.
     std::unique_lock lk2{mutex};
+    auto mapping_mutation = mapping_generation.BeginMutation();
 
     // Create VMA representing this mapping.
     auto new_vma_handle = CreateArea(virtual_addr, size, prot, flags, type, name, alignment);
@@ -627,8 +645,6 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
 
             // Perform an address space mapping for each physical area
             void* out_addr = impl.Map(current_addr, size_to_map, new_fmem_area.base, is_exec);
-            rasterizer->RegisterMemory(current_addr, size_to_map);
-
             // Tracy memory tracking breaks from merging memory areas. Disabled for now.
             // TRACK_ALLOC(out_addr, size_to_map, "VMEM");
 
@@ -685,11 +701,11 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
         // Flexible address space mappings were performed while finding direct memory areas.
         if (type != VMAType::Flexible) {
             impl.Map(mapped_addr, size, phys_addr, is_exec);
-            rasterizer->RegisterMemory(mapped_addr, size);
             // Tracy memory tracking breaks from merging memory areas. Disabled for now.
             // TRACK_ALLOC(mapped_addr, size, "VMEM");
         }
 
+        mapping_mutation.Finish();
         lk2.unlock();
 
         // If this is not a reservation, then map to GPU and address space
@@ -723,23 +739,14 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
         prot |= MemoryProt::CpuRead;
     }
 
-    // Detect a non-host backend (ZArchive, ...).
-    Common::FS::IOFile* host_file = file->handle ? file->handle->GetHostFile() : nullptr;
-    const bool non_host_backed = file->handle && host_file == nullptr;
+    handle = file->f.GetFileMapping();
 
-    if (non_host_backed) {
-        // Non-host backends are read-only
+    if (False(file->f.GetAccessMode() & Common::FS::FileAccessMode::Write) &&
+        False(file->f.GetAccessMode() & Common::FS::FileAccessMode::Append)) {
+        // If the file does not have write access, ensure prot does not contain write
+        // permissions. On real hardware, these mappings succeed, but the memory cannot be
+        // written to.
         prot &= ~MemoryProt::CpuWrite;
-    } else {
-        handle = host_file->GetFileMapping();
-
-        if (False(host_file->GetAccessMode() & Common::FS::FileAccessMode::Write) &&
-            False(host_file->GetAccessMode() & Common::FS::FileAccessMode::Append)) {
-            // If the file does not have write access, ensure prot does not contain write
-            // permissions. On real hardware, these mappings succeed, but the memory cannot be
-            // written to.
-            prot &= ~MemoryProt::CpuWrite;
-        }
     }
 
     if (prot >= MemoryProt::GpuRead) {
@@ -753,11 +760,8 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
     }
 
     if (True(flags & MemoryMapFlags::Fixed) && True(flags & MemoryMapFlags::NoOverwrite)) {
-        if (!IsValidMapping(virtual_addr, size)) {
-            LOG_ERROR(Kernel_Vmm, "addr = {:#x} size = {:#x} is outside the memory map",
-                      virtual_addr, size);
-            return ORBIS_KERNEL_ERROR_ENOMEM;
-        }
+        ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
+                   virtual_addr);
         auto vma = FindVMA(virtual_addr)->second;
 
         auto remaining_size = vma.base + vma.size - virtual_addr;
@@ -767,7 +771,7 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
         }
     } else if (False(flags & MemoryMapFlags::Fixed)) {
         virtual_addr = virtual_addr == 0 ? DEFAULT_MAPPING_BASE : virtual_addr;
-        virtual_addr = SearchFree(virtual_addr, size, GUEST_PAGE_SIZE);
+        virtual_addr = SearchFree(virtual_addr, size, 16_KB);
         if (virtual_addr == -1) {
             // No suitable memory areas to map to
             return ORBIS_KERNEL_ERROR_ENOMEM;
@@ -781,6 +785,7 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
 
     // Aquire writer lock
     std::scoped_lock lk2{mutex};
+    const auto mapping_mutation = mapping_generation.BeginMutation();
 
     // Update VMA map and map to address space.
     auto new_vma_handle = CreateArea(virtual_addr, size, prot, flags, VMAType::File, "anon", 0);
@@ -788,40 +793,24 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
     auto& new_vma = new_vma_handle->second;
     new_vma.fd = fd;
     auto mapped_addr = new_vma.base;
+    bool is_exec = True(prot & MemoryProt::CpuExec);
 
-    // Delegate the actual mapping to the file backend.
-    Core::FileSys::FileMapContext map_ctx{};
-    map_ctx.mapping_handle = handle;
-    map_ctx.map_native = [&](u8* addr, u64 sz, u64 off, u32 p, uintptr_t map_handle) {
-        impl.MapFile(reinterpret_cast<VAddr>(addr), sz, off, p, map_handle);
-    };
-    map_ctx.map_anonymous = [&](u8* addr, u64 sz) {
-        constexpr auto kAnonMarker = static_cast<u64>(-1);
-        constexpr auto kNoFd = static_cast<uintptr_t>(-1);
-        const auto rw_prot = std::bit_cast<u32>(MemoryProt::CpuRead | MemoryProt::CpuWrite);
-        impl.MapFile(reinterpret_cast<VAddr>(addr), sz, kAnonMarker, rw_prot, kNoFd);
-    };
-    map_ctx.protect = [&](u8* addr, u64 sz, u32 p) {
-        const auto mp = std::bit_cast<MemoryProt>(p);
-        Core::MemoryPermission perms{};
-        if (True(mp & MemoryProt::CpuRead)) {
-            perms |= Core::MemoryPermission::Read;
-        }
-        if (True(mp & MemoryProt::CpuReadWrite)) {
-            perms |= Core::MemoryPermission::ReadWrite;
-        }
-        if (True(mp & MemoryProt::CpuExec)) {
-            perms |= Core::MemoryPermission::Execute;
-        }
-        impl.Protect(reinterpret_cast<VAddr>(addr), sz, perms);
-    };
+    impl.MapFile(mapped_addr, size, phys_addr, std::bit_cast<u32>(prot), handle);
 
-    file->handle->Map(reinterpret_cast<u8*>(mapped_addr), size, phys_addr, std::bit_cast<u32>(prot),
-                      map_ctx);
-    if (prot != Core::MemoryProt::CpuRead) {
-        // read-only mappings cannot be registered with userfaultfd in writeprotect mode
-        rasterizer->RegisterMemory(mapped_addr, size);
+#ifndef _WIN32
+    // PS4 pages are 16KB and mmap zero-fills the mapped tail past EOF. Host pages
+    // are 4KB, so host pages fully past EOF raise SIGBUS on access (e.g. IL2CPP
+    // reading past the end of global-metadata.dat). Back that tail with anonymous
+    // zero pages to match PS4 semantics.
+    const u64 file_size = file->f.GetSize();
+    const u64 file_bytes =
+        file_size > static_cast<u64>(phys_addr) ? file_size - static_cast<u64>(phys_addr) : 0;
+    const u64 host_page = static_cast<u64>(sysconf(_SC_PAGESIZE));
+    const u64 valid_size = std::min(size, Common::AlignUp(file_bytes, host_page));
+    if (valid_size < size) {
+        impl.Map(mapped_addr + valid_size, size - valid_size);
     }
+#endif
 
     *out_addr = std::bit_cast<void*>(mapped_addr);
     return ORBIS_OK;
@@ -849,6 +838,7 @@ s32 MemoryManager::PoolDecommit(VAddr virtual_addr, u64 size) {
 
     // Aquire writer mutex
     std::scoped_lock lk2{mutex};
+    const auto mapping_mutation = mapping_generation.BeginMutation();
 
     // Loop through all vmas in the area, unmap them.
     u64 remaining_size = size;
@@ -903,10 +893,7 @@ s32 MemoryManager::PoolDecommit(VAddr virtual_addr, u64 size) {
     }
 
     // Unmap from address space
-    u64 size_to_unmap = size;
-    VAddr unmapped_addr = impl.Unmap(virtual_addr, &size_to_unmap);
-    rasterizer->RegisterMemory(unmapped_addr, size_to_unmap);
-
+    impl.Unmap(virtual_addr, size);
     // Tracy memory tracking breaks from merging memory areas. Disabled for now.
     // TRACK_FREE(virtual_addr, "VMEM");
 
@@ -920,13 +907,10 @@ s32 MemoryManager::UnmapMemory(VAddr virtual_addr, u64 size) {
 
     std::scoped_lock lk{unmap_mutex};
     // Align address and size appropriately
-    virtual_addr = Common::AlignDown(virtual_addr, GUEST_PAGE_SIZE);
-    size = Common::AlignUp(size, GUEST_PAGE_SIZE);
-    if (!IsValidMapping(virtual_addr, size)) {
-        LOG_ERROR(Kernel_Vmm, "addr = {:#x} size = {:#x} is outside the memory map", virtual_addr,
-                  size);
-        return ORBIS_KERNEL_ERROR_EINVAL;
-    }
+    virtual_addr = Common::AlignDown(virtual_addr, 16_KB);
+    size = Common::AlignUp(size, 16_KB);
+    ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
+               virtual_addr);
 
     // If the requested range has GPU access, unmap from GPU.
     if (IsValidGpuMapping(virtual_addr, size)) {
@@ -935,6 +919,7 @@ s32 MemoryManager::UnmapMemory(VAddr virtual_addr, u64 size) {
 
     // Acquire writer lock.
     std::scoped_lock lk2{mutex};
+    const auto mapping_mutation = mapping_generation.BeginMutation();
     return UnmapMemoryImpl(virtual_addr, size);
 }
 
@@ -1000,10 +985,7 @@ u64 MemoryManager::UnmapBytesFromEntry(VAddr virtual_addr, VirtualMemoryArea vma
 
     if (vma_type != VMAType::Reserved && vma_type != VMAType::PoolReserved) {
         // Unmap the memory region.
-        u64 size_to_unmap = size_in_vma;
-        VAddr unmapped_addr = impl.Unmap(virtual_addr, &size_to_unmap);
-        rasterizer->RegisterMemory(unmapped_addr, size_to_unmap);
-
+        impl.Unmap(virtual_addr, size_in_vma);
         // Tracy memory tracking breaks from merging memory areas. Disabled for now.
         // TRACK_FREE(virtual_addr, "VMEM");
     }
@@ -1024,19 +1006,23 @@ s32 MemoryManager::UnmapMemoryImpl(VAddr virtual_addr, u64 size) {
     return ORBIS_OK;
 }
 
-s32 MemoryManager::QueryProtection(VAddr addr, void** start, void** end, u32* prot) {
+s32 MemoryManager::QueryProtection(VAddr addr, void** start, void** end, u32* prot,
+                                   u64* generation) {
     std::shared_lock lk{mutex};
     VAddr min_query_addr = impl.SystemManagedVirtualBase();
     if (addr < min_query_addr) {
-        LOG_ERROR(Kernel_Vmm, "Address {:#x} is not mapped", addr);
+        LOG_TRACE(Kernel_Vmm, "Address {:#x} is not mapped", addr);
         return ORBIS_KERNEL_ERROR_EACCES;
     }
 
     const auto it = FindVMA(addr);
     const auto& vma = it->second;
     if (vma.IsFree()) {
-        LOG_ERROR(Kernel_Vmm, "Address {:#x} is not mapped", addr);
+        LOG_TRACE(Kernel_Vmm, "Address {:#x} is not mapped", addr);
         return ORBIS_KERNEL_ERROR_EACCES;
+    }
+    if (generation != nullptr) {
+        *generation = mapping_generation.Load();
     }
 
     if (start != nullptr) {
@@ -1118,6 +1104,33 @@ s64 MemoryManager::ProtectBytes(VAddr addr, VirtualMemoryArea& vma_base, u64 siz
     return adjusted_size;
 }
 
+s32 MemoryManager::SealGuestExecutable(VAddr addr, u64 size) {
+    if (size == 0) return ORBIS_OK;
+
+    std::scoped_lock lk{mutex, unmap_mutex};
+    if (!IsValidMapping(addr, size) || addr > std::numeric_limits<VAddr>::max() - size) {
+        return ORBIS_KERNEL_ERROR_EACCES;
+    }
+
+    const auto end = addr + size;
+    auto cursor = addr;
+    while (cursor < end) {
+        const auto it = FindVMA(cursor);
+        const auto& vma = it->second;
+        if (vma.base > cursor || vma.IsFree() || vma.type == VMAType::Reserved ||
+            vma.type == VMAType::PoolReserved || False(vma.prot & MemoryProt::CpuExec) ||
+            True(vma.prot & MemoryProt::CpuWrite)) {
+            return ORBIS_KERNEL_ERROR_EACCES;
+        }
+        const auto vma_end = vma.base + vma.size;
+        if (vma_end <= cursor) return ORBIS_KERNEL_ERROR_EACCES;
+        cursor = std::min(end, vma_end);
+    }
+
+    impl.Protect(addr, size, MemoryPermission::Read | MemoryPermission::Execute);
+    return ORBIS_OK;
+}
+
 s32 MemoryManager::Protect(VAddr addr, u64 size, MemoryProt prot) {
     // If size is zero, then there's nothing to protect
     if (size == 0) {
@@ -1126,25 +1139,8 @@ s32 MemoryManager::Protect(VAddr addr, u64 size, MemoryProt prot) {
 
     // Ensure the range to modify is valid
     std::scoped_lock lk{mutex, unmap_mutex};
-
-    const VAddr vbase = impl.SystemManagedVirtualBase();
-    const VAddr vend = vbase + impl.SystemManagedVirtualSize();
-
-    // In the PS4 kernel, invalid pages are ignored and only mapped pages in range are protected.
-    if (addr < vbase) {
-        const u64 skip = vbase - addr;
-        if (skip >= size) {
-            return ORBIS_OK;
-        }
-        addr += skip;
-        size -= skip;
-    }
-    if (addr >= vend) {
-        return ORBIS_OK;
-    }
-    if (addr + size > vend) {
-        size = vend - addr;
-    }
+    const auto mapping_mutation = mapping_generation.BeginMutation();
+    ASSERT_MSG(IsValidMapping(addr, size), "Attempted to access invalid address {:#x}", addr);
 
     // Appropriately restrict flags.
     constexpr static MemoryProt flag_mask =
@@ -1155,24 +1151,15 @@ s32 MemoryManager::Protect(VAddr addr, u64 size, MemoryProt prot) {
     s64 protected_bytes = 0;
     while (protected_bytes < size) {
         auto it = FindVMA(addr + protected_bytes);
-        if (it == vma_map.end()) {
-            break;
-        }
         auto& vma_base = it->second;
         if (vma_base.base > addr + protected_bytes) {
             // Account for potential gaps in memory map.
             protected_bytes += vma_base.base - (addr + protected_bytes);
-            if (protected_bytes >= size) {
-                break;
-            }
         }
         auto result = ProtectBytes(addr + protected_bytes, vma_base, size - protected_bytes, prot);
         if (result < 0) {
             // ProtectBytes returned an error, return it
             return result;
-        }
-        if (result == 0) {
-            break;
         }
         protected_bytes += result;
     }
@@ -1311,6 +1298,7 @@ s32 MemoryManager::DirectQueryAvailable(PAddr search_start, PAddr search_end, u6
 
 s32 MemoryManager::SetDirectMemoryType(VAddr addr, u64 size, s32 memory_type) {
     std::scoped_lock lk{mutex, unmap_mutex};
+    const auto mapping_mutation = mapping_generation.BeginMutation();
 
     ASSERT_MSG(IsValidMapping(addr, size), "Attempted to access invalid address {:#x}", addr);
 
@@ -1361,11 +1349,12 @@ s32 MemoryManager::SetDirectMemoryType(VAddr addr, u64 size, s32 memory_type) {
 
 void MemoryManager::NameVirtualRange(VAddr virtual_addr, u64 size, std::string_view name) {
     std::scoped_lock lk{mutex, unmap_mutex};
+    const auto mapping_mutation = mapping_generation.BeginMutation();
 
     // Sizes are aligned up to the nearest 16_KB
-    u64 aligned_size = Common::AlignUp(size, GUEST_PAGE_SIZE);
+    u64 aligned_size = Common::AlignUp(size, 16_KB);
     // Addresses are aligned down to the nearest 16_KB
-    VAddr aligned_addr = Common::AlignDown(virtual_addr, GUEST_PAGE_SIZE);
+    VAddr aligned_addr = Common::AlignDown(virtual_addr, 16_KB);
 
     ASSERT_MSG(IsValidMapping(aligned_addr, aligned_size),
                "Attempted to access invalid address {:#x}", aligned_addr);
@@ -1484,10 +1473,7 @@ VAddr MemoryManager::SearchFree(VAddr virtual_addr, u64 size, u32 alignment) {
     }
 
     // If the requested address is beyond the maximum our code can handle, throw an assert
-    if (!IsValidMapping(virtual_addr)) {
-        LOG_ERROR(Kernel_Vmm, "addr = {:#x} is outside the memory map", virtual_addr);
-        return -1;
-    }
+    ASSERT_MSG(IsValidMapping(virtual_addr), "Input address {:#x} is out of bounds", virtual_addr);
 
     // Align up the virtual_addr first.
     virtual_addr = Common::AlignUp(virtual_addr, alignment);
@@ -1596,7 +1582,9 @@ MemoryManager::VMAHandle MemoryManager::CarveVMA(VAddr virtual_addr, u64 size) {
         return vma_handle;
     }
 
-    ASSERT_MSG(end_in_vma <= vma.size, "Mapping cannot fit inside free region");
+    ASSERT_MSG(end_in_vma <= vma.size,
+               "Mapping of {:#x} bytes at {:#x} cannot fit inside free region {:#x} - {:#x}", size,
+               virtual_addr, vma.base, vma.base + vma.size);
 
     if (end_in_vma != vma.size) {
         // Split VMA at the end of the allocated region

@@ -38,7 +38,6 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -52,12 +51,6 @@
 #include <vk_mem_alloc.h>
 
 namespace Vulkan {
-
-static inline bool IsSyncTraceEnabled() {
-    return false;
-}
-
-static inline void TraceSync([[maybe_unused]] const char* format, ...) {}
 
 bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format format) {
     const vk::FormatProperties props{physical_device.getFormatProperties(format)};
@@ -154,18 +147,17 @@ struct ScreenshotReadback {
     vk::Format format{};
     bool hdr_encoded{};
 
-    ScreenshotReadback(const Instance& instance, ScreenshotKind kind_,
+    ScreenshotReadback(const Instance& instance, Scheduler& scheduler, ScreenshotKind kind_,
                        std::vector<std::filesystem::path> paths_, const u32 width_,
                        const u32 height_, const vk::Format format_, const bool hdr_encoded_)
         : kind{kind_}, paths{std::move(paths_)},
-          buffer{instance, 0, static_cast<u64>(width_) * static_cast<u64>(height_) * 4,
-                 VideoCore::MemoryType::HostCached},
+          buffer{instance,
+                 scheduler,
+                 VideoCore::MemoryUsage::Download,
+                 0,
+                 vk::BufferUsageFlagBits::eTransferDst,
+                 static_cast<u64>(width_) * static_cast<u64>(height_) * 4},
           width{width_}, height{height_}, format{format_}, hdr_encoded{hdr_encoded_} {}
-
-    ScreenshotReadback(const Instance& instance, Scheduler&, ScreenshotKind kind_,
-                       std::vector<std::filesystem::path> paths_, const u32 width_,
-                       const u32 height_, const vk::Format format_, const bool hdr_encoded_)
-        : ScreenshotReadback(instance, kind_, std::move(paths_), width_, height_, format_, hdr_encoded_) {}
 };
 
 static std::string SanitizeFilenameComponent(std::string value) {
@@ -765,8 +757,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                EmulatorSettings.IsVkCrashDiagnosticEnabled()},
       draw_scheduler{instance}, present_scheduler{instance}, flip_scheduler{instance},
       swapchain{instance, window},
-      runtime{instance, draw_scheduler},
-      rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
+      rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
     const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
@@ -787,14 +778,15 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     fsr_settings.rcas_attenuation =
         static_cast<float>(EmulatorSettings.GetRcasAttenuation() / 1000.f);
 
-    fsr_pass.Create(device, instance.GetAllocator(), num_images);
-    pp_pass.Create(instance, draw_scheduler.GetWorkSemaphore(),
+    fsr_pass.Create(instance, draw_scheduler.GetMasterSemaphore(), device,
+                    instance.GetAllocator(), num_images);
+    pp_pass.Create(instance, draw_scheduler.GetMasterSemaphore(),
                    swapchain.GetSurfaceFormat().format);
     vr_exporter = std::make_unique<VrExporter>(instance, draw_scheduler);
 #ifdef ENABLE_OPENXR_HOST
     if (vr_exporter->HasLocalHost()) {
         // The machine has a headset of its own: its session is made on this device.
-        hmd_pp_pass.Create(instance, draw_scheduler.GetWorkSemaphore(),
+        hmd_pp_pass.Create(instance, draw_scheduler.GetMasterSemaphore(),
                            Core::Vr::OpenXrHost::FrameFormat);
         Core::Vr::OpenXrHost::Instance().Start({
             .instance = instance.GetInstance(),
@@ -803,7 +795,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
             .queue = instance.GetXrQueue(),
             .queue_family = instance.GetGraphicsQueueFamilyIndex(),
             .queue_index = instance.GetXrQueueIndex(),
-            .title_timeline = draw_scheduler.GetWorkSemaphore()->Handle(),
+            .title_timeline = draw_scheduler.GetMasterSemaphore()->Handle(),
         });
     }
 #endif
@@ -979,8 +971,8 @@ Frame* Presenter::PrepareLastFrame() {
     });
 
     // Flush frame creation commands.
-    frame->ready_timeline = scheduler.GetWorkSemaphore();
-    frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
+    frame->ready_timeline = scheduler.GetMasterSemaphore();
+    frame->ready_semaphore = scheduler.GetMasterSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
     scheduler.Flush(info);
@@ -1056,7 +1048,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     VideoCore::ImageViewInfo view_info{};
     view_info.format = GetFrameViewFormat(attribute.attrib.pixel_format);
     // Exclude alpha from output frame to avoid blending with UI.
-    view_info.mapping.a = AmdGpu::CompSwizzle::One;
+    view_info.mapping.a = vk::ComponentSwizzle::eOne;
 
     auto& image = texture_cache.GetImage(image_id);
     auto image_view = *image.FindView(view_info).image_view;
@@ -1076,17 +1068,15 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         auto& readback = pending_screenshots.back();
 
         // Capture the guest output before any host-side scaling (FSR/PP) is applied.
-        runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal,
-                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
-        runtime.FlushBarriers();
+        image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+                      cmdbuf);
         CopyImageToReadback(cmdbuf, image.GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                             readback);
     }
 
     // Continue with host-side passes that draw the displayed (scaled) frame.
-    runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
-                    vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
-    runtime.FlushBarriers();
+    image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead, {},
+                  cmdbuf);
 
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
                                  fsr_settings, frame->is_hdr);
@@ -1104,8 +1094,8 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
 
     // Flush frame creation commands.
-    frame->ready_timeline = draw_scheduler.GetWorkSemaphore();
-    frame->ready_semaphore = draw_scheduler.GetWorkSemaphore()->Handle();
+    frame->ready_timeline = draw_scheduler.GetMasterSemaphore();
+    frame->ready_semaphore = draw_scheduler.GetMasterSemaphore()->Handle();
     frame->ready_tick = draw_scheduler.CurrentTick();
     SubmitInfo info{};
     draw_scheduler.Flush(info);
@@ -1307,7 +1297,8 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     const u32 src_image_width = is_sbs ? (eye_width * 2) : eye_width;
     bool encoded_in = pp_settings.gamma == 1.0f && pp_settings.hdr == 0 && !spectator &&
                       pixel_for_pixel(frame) && pixel_for_pixel(local) &&
-                      right_info.size.width == src_image_width && right_info.size.height == eye_height;
+                      right_info.size.width == src_image_width && right_info.size.height == eye_height &&
+                      !FrameStats::AbOff("ppcopy");
     for (u32 eye = 0; eye < 2 && encoded_in; ++eye) {
         const vk::Format sibling = encoded_sibling(descs[eye].view_info.format);
         encoded_in = sibling != vk::Format::eUndefined &&
@@ -1327,7 +1318,7 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     for (u32 eye = 0; eye < 2; ++eye) {
         auto view_info = descs[eye].view_info;
         // Exclude alpha from output frame to avoid blending with UI.
-        view_info.mapping.a = AmdGpu::CompSwizzle::One;
+        view_info.mapping.a = vk::ComponentSwizzle::eOne;
         if (encoded_in) {
             view_info.format = encoded_sibling(view_info.format);
         }
@@ -1337,28 +1328,25 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         auto& image = texture_cache.GetImage(image_ids[eye]);
         eye_views[eye] = *image.FindView(view_info).image_view;
         if (eye_scan) {
-            runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal,
-                            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
-            runtime.FlushBarriers();
+            image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
+                          {}, cmdbuf);
             eye_scan->emplace_back(instance, draw_scheduler, ScreenshotKind::GameOnly,
                                    std::vector<std::filesystem::path>{}, image.info.size.width,
                                    image.info.size.height, image.info.pixel_format, false);
             CopyImageToReadback(cmdbuf, image.GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                                 eye_scan->back());
         }
-        runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
-                        vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
-        runtime.FlushBarriers();
+        image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead,
+                      {}, cmdbuf);
     }
     if (has_overlay) {
         for (u32 eye = 0; eye < 2; ++eye) {
             auto view_info = overlay_descs[eye].view_info;
-            view_info.mapping.a = AmdGpu::CompSwizzle::Alpha;
+            view_info.mapping.a = vk::ComponentSwizzle::eIdentity;
             auto& ov_image = texture_cache.GetImage(overlay_image_ids[eye]);
             overlay_views[eye] = *ov_image.FindView(view_info).image_view;
-            runtime.Transit(&ov_image, vk::ImageLayout::eShaderReadOnlyOptimal,
-                            vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
-            runtime.FlushBarriers();
+            ov_image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+                             vk::AccessFlagBits2::eShaderRead, {}, cmdbuf);
         }
     }
     // Left eye on the left half, right eye on the right half.
@@ -1537,8 +1525,8 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     // Flush frame creation commands.
     for (Frame* target : {frame, local}) {
         if (target != nullptr) {
-            target->ready_timeline = draw_scheduler.GetWorkSemaphore();
-            target->ready_semaphore = draw_scheduler.GetWorkSemaphore()->Handle();
+            target->ready_timeline = draw_scheduler.GetMasterSemaphore();
+            target->ready_semaphore = draw_scheduler.GetMasterSemaphore()->Handle();
             target->ready_tick = draw_scheduler.CurrentTick();
         }
     }
@@ -1565,7 +1553,261 @@ bool Presenter::DeliverHmdFrame(Frame* frame, const Core::Vr::PresentedFrame& in
     return true;
 }
 
-void Presenter::DumpGpuImages([[maybe_unused]] std::string_view folder) {}
+void Presenter::DumpGpuImages(std::string_view folder) {
+    // SHADPS4_DUMP_WIDTH=<pixels>: how wide the pictures are at most (640 unless told; the
+    // targets' own width for looking at what is in a pixel).
+    static const u32 ThumbWidth = [] {
+        const char* value = std::getenv("SHADPS4_DUMP_WIDTH");
+        const int width = value != nullptr ? std::atoi(value) : 0;
+        return width >= 64 ? static_cast<u32>(width) : 640u;
+    }();
+    const auto dump_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / folder;
+    std::error_code ec;
+    std::filesystem::remove_all(dump_dir, ec);
+    std::filesystem::create_directories(dump_dir, ec);
+
+    // Collect first: transitions and submits below must not run under the cache lock.
+    std::vector<VideoCore::Image*> images;
+    texture_cache.ForEachImage([&](VideoCore::Image& image) {
+        const auto& info = image.info;
+        LOG_INFO(Render_Vulkan,
+                 "cache image at {:#x}: {}x{}x{}, {}, samples {}, levels {}, layers {}, flags {:#x}{}",
+                 info.guest_address, info.size.width, info.size.height, info.size.depth,
+                 vk::to_string(info.pixel_format), info.num_samples, info.resources.levels,
+                 info.resources.layers, static_cast<u32>(image.flags),
+                 info.props.is_depth ? ", depth" : "");
+        if (!(image.flags & VideoCore::ImageFlagBits::GpuModified) || info.props.is_depth ||
+            info.props.is_volume || info.size.width < 64 || info.size.height < 64) {
+            return;
+        }
+        images.push_back(&image);
+    });
+
+    const vk::Device device = instance.GetDevice();
+    u32 index = 0;
+    for (VideoCore::Image* image : images) {
+        const auto& info = image->info;
+        const u32 width = std::min(info.size.width, ThumbWidth);
+        const u32 height = std::max(1u, info.size.height * width / info.size.width);
+
+        const vk::ImageCreateInfo thumb_ci = {
+            .imageType = vk::ImageType::e2D,
+            .format = vk::Format::eR8G8B8A8Unorm,
+            .extent = {width, height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+        };
+        const VmaAllocationCreateInfo alloc_info = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VkImage thumb_handle{};
+        VmaAllocation thumb_allocation{};
+        const VkImageCreateInfo thumb_ci_raw = static_cast<VkImageCreateInfo>(thumb_ci);
+        if (vmaCreateImage(instance.GetAllocator(), &thumb_ci_raw, &alloc_info, &thumb_handle,
+                           &thumb_allocation, nullptr) != VK_SUCCESS) {
+            LOG_ERROR(Render_Vulkan, "Could not allocate a thumbnail for the render target dump");
+            return;
+        }
+        const vk::Image thumb{thumb_handle};
+
+        ScreenshotReadback readback{instance,
+                                    draw_scheduler,
+                                    ScreenshotKind::GameOnly,
+                                    {},
+                                    width,
+                                    height,
+                                    vk::Format::eR8G8B8A8Unorm,
+                                    false};
+
+        draw_scheduler.EndRendering();
+        const auto cmdbuf = draw_scheduler.CommandBuffer();
+        const vk::ImageSubresourceRange color_range = {
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .levelCount = 1,
+            .layerCount = 1,
+        };
+        const auto thumb_barrier = [&](vk::ImageLayout from, vk::ImageLayout to) {
+            const vk::ImageMemoryBarrier barrier = {
+                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                .oldLayout = from,
+                .newLayout = to,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = thumb,
+                .subresourceRange = color_range,
+            };
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                   vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
+        };
+
+        image->Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+                       cmdbuf);
+
+        // Multisampled targets cannot be blitted, they are resolved into a scratch image first.
+        const u32 samples = static_cast<u32>(image->backing->image.image_ci.samples);
+        vk::Image blit_source = image->GetImage();
+        VkImage resolved_handle{};
+        VmaAllocation resolved_allocation{};
+        if (samples > 1) {
+            const vk::ImageCreateInfo resolved_ci = {
+                .imageType = vk::ImageType::e2D,
+                .format = info.pixel_format,
+                .extent = {info.size.width, info.size.height, 1},
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = vk::SampleCountFlagBits::e1,
+                .usage = vk::ImageUsageFlagBits::eTransferDst |
+                         vk::ImageUsageFlagBits::eTransferSrc |
+                         vk::ImageUsageFlagBits::eColorAttachment,
+            };
+            const VkImageCreateInfo resolved_ci_raw = static_cast<VkImageCreateInfo>(resolved_ci);
+            if (vmaCreateImage(instance.GetAllocator(), &resolved_ci_raw, &alloc_info,
+                               &resolved_handle, &resolved_allocation, nullptr) != VK_SUCCESS) {
+                vmaDestroyImage(instance.GetAllocator(), thumb_handle, thumb_allocation);
+                continue;
+            }
+            const vk::Image resolved{resolved_handle};
+            const auto resolved_barrier = [&](vk::ImageLayout from, vk::ImageLayout to) {
+                const vk::ImageMemoryBarrier barrier = {
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                    .oldLayout = from,
+                    .newLayout = to,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = resolved,
+                    .subresourceRange = color_range,
+                };
+                cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                       vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
+                                       barrier);
+            };
+            resolved_barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+            cmdbuf.resolveImage(image->GetImage(), vk::ImageLayout::eTransferSrcOptimal, resolved,
+                                vk::ImageLayout::eTransferDstOptimal,
+                                vk::ImageResolve{
+                                    .srcSubresource = MakeImageSubresourceLayers(),
+                                    .dstSubresource = MakeImageSubresourceLayers(),
+                                    .extent = {info.size.width, info.size.height, 1},
+                                });
+            resolved_barrier(vk::ImageLayout::eTransferDstOptimal,
+                             vk::ImageLayout::eTransferSrcOptimal);
+            blit_source = resolved;
+        }
+
+        thumb_barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+        cmdbuf.blitImage(blit_source, vk::ImageLayout::eTransferSrcOptimal, thumb,
+                         vk::ImageLayout::eTransferDstOptimal,
+                         MakeImageBlitStretch(info.size.width, info.size.height, width, height),
+                         vk::Filter::eLinear);
+        thumb_barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal);
+        CopyImageToReadback(cmdbuf, thumb, vk::ImageLayout::eTransferSrcOptimal, readback);
+        draw_scheduler.Finish();
+
+        std::vector<u8> rgba(static_cast<size_t>(width) * height * 4);
+        std::memcpy(rgba.data(), readback.buffer.mapped_data.data(), rgba.size());
+        for (size_t i = 3; i < rgba.size(); i += 4) {
+            rgba[i] = 0xff;
+        }
+        const auto path = dump_dir / fmt::format("{:03}_{:x}_{}x{}_{}_s{}.png", index++,
+                                                 info.guest_address, info.size.width,
+                                                 info.size.height,
+                                                 vk::to_string(info.pixel_format), samples);
+        WritePng(path, rgba, width, height);
+        vmaDestroyImage(instance.GetAllocator(), thumb_handle, thumb_allocation);
+        if (resolved_handle) {
+            vmaDestroyImage(instance.GetAllocator(), resolved_handle, resolved_allocation);
+        }
+    }
+    LOG_INFO(Render_Vulkan, "Dumped {} render targets to {}", index, dump_dir.string());
+
+    // SHADPS4_DUMP_IMAGE=<address>: the texture at that address as it is held, every level with
+    // all its layers, raw (rt_dump/image_<address>_level<n>_<w>x<h>x<layers>_<format>.bin): for
+    // what the pictures above leave out, textures the game only reads.
+    const char* wanted_text = std::getenv("SHADPS4_DUMP_IMAGE");
+    if (wanted_text == nullptr) {
+        return;
+    }
+    // (Several addresses may be given, apart by commas.)
+    std::vector<VAddr> wanted_list;
+    for (const char* at = wanted_text; *at != '\0';) {
+        char* end = nullptr;
+        wanted_list.push_back(std::strtoull(at, &end, 16));
+        if (end == at) {
+            break;
+        }
+        at = *end == ',' ? end + 1 : end;
+    }
+    std::vector<VideoCore::Image*> raw_images;
+    texture_cache.ForEachImage([&](VideoCore::Image& image) {
+        if (std::ranges::find(wanted_list, image.info.guest_address) != wanted_list.end() &&
+            image.info.num_samples == 1) {
+            raw_images.push_back(&image);
+        }
+    });
+    for (VideoCore::Image* image : raw_images) {
+        const auto& info = image->info;
+        const bool block = info.props.is_block;
+        const u32 unit = info.num_bits / 8; // bytes a pixel, or a block of 4x4 for compressed
+        for (u32 level = 0; level < info.resources.levels; ++level) {
+            const u32 w = std::max(info.size.width >> level, 1u);
+            const u32 h = std::max(info.size.height >> level, 1u);
+            const u32 units_w = block ? (w + 3) / 4 : w;
+            const u32 units_h = block ? (h + 3) / 4 : h;
+            const u64 bytes = u64{units_w} * units_h * unit * info.resources.layers;
+            VideoCore::Buffer buffer{instance,
+                                     draw_scheduler,
+                                     VideoCore::MemoryUsage::Download,
+                                     0,
+                                     vk::BufferUsageFlagBits::eTransferDst,
+                                     bytes};
+            draw_scheduler.EndRendering();
+            const auto cmdbuf = draw_scheduler.CommandBuffer();
+            image->Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
+                           {}, cmdbuf);
+            const vk::BufferImageCopy region = {
+                .bufferOffset = 0,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageSubresource =
+                    {
+                        .aspectMask = info.props.is_depth ? vk::ImageAspectFlagBits::eDepth
+                                                          : vk::ImageAspectFlagBits::eColor,
+                        .mipLevel = level,
+                        .baseArrayLayer = 0,
+                        .layerCount = info.resources.layers,
+                    },
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {w, h, 1},
+            };
+            cmdbuf.copyImageToBuffer(image->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
+                                     buffer.Handle(), region);
+            draw_scheduler.Finish();
+            const auto path =
+                dump_dir / fmt::format("image_{:x}_level{}_{}x{}x{}_{}.bin", info.guest_address,
+                                       level, w, h, info.resources.layers,
+                                       vk::to_string(info.pixel_format));
+            std::ofstream out{path, std::ios::binary};
+            out.write(reinterpret_cast<const char*>(buffer.mapped_data.data()),
+                      static_cast<std::streamsize>(bytes));
+        }
+        // And what the game's memory holds there, for comparison.
+        {
+            const auto path = dump_dir / fmt::format("image_{:x}_guest_{:x}_tile{}.bin",
+                                                     info.guest_address, info.guest_size,
+                                                     static_cast<u32>(info.tile_mode));
+            std::ofstream out{path, std::ios::binary};
+            out.write(reinterpret_cast<const char*>(info.guest_address),
+                      static_cast<std::streamsize>(info.guest_size));
+        }
+        LOG_INFO(Render_Vulkan,
+                 "Dumped the texture at {:#x}: {} levels, {} layers, tile mode {}, {} bytes in "
+                 "memory, flags {:#x}",
+                 info.guest_address, info.resources.levels, info.resources.layers,
+                 static_cast<u32>(info.tile_mode), info.guest_size, static_cast<u32>(image->flags));
+    }
+}
 
 Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     // Request a free presentation frame.
@@ -1636,8 +1878,8 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     });
 
     // Flush frame creation commands.
-    frame->ready_timeline = scheduler.GetWorkSemaphore();
-    frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
+    frame->ready_timeline = scheduler.GetMasterSemaphore();
+    frame->ready_semaphore = scheduler.GetMasterSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
     scheduler.Flush(info);
@@ -1647,6 +1889,9 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     static std::atomic_uint32_t present_traces{};
     const u32 trace_id = present_traces.fetch_add(1, std::memory_order_relaxed);
+    if (!is_reusing_frame) {
+        FrameStats::EndFrame();
+    }
 
     // Bachata diagnostics: dump the guest output buffer every N presents when
     // the file <UserDir>/auto_shot_every exists (device black-screen triage;
@@ -1837,9 +2082,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
                 if (Libraries::SystemService::IsSplashVisible()) { // draw splash
                     if (!splash_img.has_value()) {
                         splash_img.emplace();
-                        const auto& splash_data = Common::ElfInfo::Instance().GetSplashData();
-                        if (!splash_data.empty()) {
-                            splash_img = ImGui::RefCountedTexture::DecodePngTexture(splash_data);
+                        auto splash_path = Common::ElfInfo::Instance().GetSplashPath();
+                        if (!splash_path.empty()) {
+                            splash_img = ImGui::RefCountedTexture::DecodePngFile(splash_path);
                         }
                     }
                     if (auto& splash_image = this->splash_img.value()) {

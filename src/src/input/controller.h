@@ -3,11 +3,10 @@
 
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <mutex>
-#include <optional>
 #include <utility>
+#include <vector>
 
 #include <SDL3/SDL_gamepad.h>
 #include "SDL3/SDL_joystick.h"
@@ -15,10 +14,17 @@
 #include "common/ring_buffer_queue.h"
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
+#include "input/pad_gestures.h"
+#include "input/stick_finger.h"
+#include "input/view_turn.h"
+
+struct SDL_Gamepad;
 
 namespace Input {
 
-void SetBlowing(bool blowing);
+enum class ControllerType {
+    Standard,
+};
 
 enum class Axis {
     LeftX = 0,
@@ -61,22 +67,19 @@ private:
 
 public:
     void OnButton(Libraries::Pad::OrbisPadButtonDataOffset, bool);
-    void OnAxis(Axis, int, u64 timestamp, bool smooth = true);
+    void OnAxis(Axis, int, bool smooth = true);
     void OnTouchpad(int touchIndex, bool isDown, float x, float y);
     void OnGyro(const float[3]);
     void OnAccel(const float[3]);
-    void UpdateAxisSmoothing(u64 timestamp);
+    void UpdateAxisSmoothing();
 
     Libraries::Pad::OrbisPadButtonDataOffset buttonsState{};
     u64 time = 0;
     AxisArray<s32> axes{axis_defaults};
-    TouchpadEntry touchpad[2]{};
+    TouchpadEntry touchpad[2] = {{false, 0, 0}, {false, 0, 0}};
     Libraries::Pad::OrbisFVector3 acceleration = {0.0f, -9.81f, 0.0f};
     Libraries::Pad::OrbisFVector3 angularVelocity = {0.0f, 0.0f, 0.0f};
     Libraries::Pad::OrbisFQuaternion orientation = {0.0f, 0.0f, 0.0f, 1.0f};
-    u64 touch_time_since_held_down{};
-    bool connected{};
-    u8 connected_count{};
 };
 
 inline int GetAxis(int min, int max, int value) {
@@ -93,15 +96,30 @@ public:
     void ConnectController(SDL_Gamepad* pad);
     void DisconnectController();
 
-    State ReadState();
-    int ReadStates(State* states, int states_num);
+    void ReadState(State* state, bool* isConnected, int* connectedCount);
+    int ReadStates(State* states, int states_num, bool* isConnected, int* connectedCount);
 
     void Button(Libraries::Pad::OrbisPadButtonDataOffset button, bool isPressed);
     void Axis(Input::Axis axis, int value, bool smooth = true);
+    void ApplyRemoteState(Libraries::Pad::OrbisPadButtonDataOffset buttons,
+                          const std::array<int, 6>& axes, bool touch_down, float touch_x,
+                          float touch_y);
+    /// In a headset, the headset's own controllers can play this controller in place of the
+    /// PC's gamepad (see Input::PadSource). While they do, what the gamepad's buttons, sticks
+    /// and touchpad say is left aside. The controller is at rest after either change.
+    void SetHeadsetPlays(bool plays);
+    bool HeadsetPlays() const {
+        return m_headset_plays.load(std::memory_order_relaxed);
+    }
+    /// ApplyRemoteState for the headset's controllers: nothing unless they play.
+    void ApplyHeadsetState(Libraries::Pad::OrbisPadButtonDataOffset buttons,
+                           const std::array<int, 6>& axes, bool touch_down, float touch_x,
+                           float touch_y);
+    void Gyro(int id);
+    void Acceleration(int id);
     void UpdateGyro(const float gyro[3]);
     void UpdateAcceleration(const float acceleration[3]);
-    void PollState();
-    void ResetOrientation();
+    void UpdateAxisSmoothing();
     void SetLightBarRGB(u8 const r, u8 const g, u8 const b);
     void SetLightBarRGB(Colour const c);
     Colour GetLightBarRGB();
@@ -109,40 +127,66 @@ public:
     bool SetVibration(u8 smallMotor, u8 largeMotor);
     void SetTouchpadState(int touchIndex, bool touchDown, float x, float y);
 
-    /// In a headset, the headset's own controllers can play this controller in place of the
-    /// PC's gamepad. While they do, what the gamepad's buttons, sticks
-    /// and touchpad say is left aside. The controller is at rest after either change.
-    void SetHeadsetPlays(bool plays);
-    bool HeadsetPlays() const {
-        return m_headset_plays.load(std::memory_order_relaxed);
-    }
-    /// Apply state for the headset's controllers: nothing unless they play.
-    void ApplyHeadsetState(Libraries::Pad::OrbisPadButtonDataOffset buttons,
-                           const std::array<int, 6>& axes, bool touch_down, float touch_x,
-                           float touch_y);
+    u8 GetTouchCount();
+    void SetTouchCount(u8 touchCount);
+    u8 GetSecondaryTouchCount();
+    void SetSecondaryTouchCount(u8 touchCount);
+    u8 GetPreviousTouchNum();
+    void SetPreviousTouchNum(u8 touchNum);
+    bool WasSecondaryTouchReset();
+    void UnsetSecondaryTouchResetBool();
 
+    void SetLastOrientation(Libraries::Pad::OrbisFQuaternion& orientation);
+    Libraries::Pad::OrbisFQuaternion GetLastOrientation();
+    std::chrono::steady_clock::time_point GetLastUpdate();
+    void SetLastUpdate(std::chrono::steady_clock::time_point lastUpdate);
+
+    float gyro_poll_rate;
+    float accel_poll_rate;
     float gyro_buf[3] = {0.0f, 0.0f, 0.0f}, accel_buf[3] = {0.0f, 9.81f, 0.0f};
     s32 user_id = Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID;
     SDL_Gamepad* m_sdl_gamepad = nullptr;
+    u64 last_touch_down_timestamp = 0;
 
 private:
-    // m_state_mutex must be held by the caller.
-    void PushStateLocked(u64 timestamp = 0);
-    void UpdateOrientationLocked(u64 timestamp);
+    void PushState();
+    /// With m_states_queue_mutex held. The buttons that were down before.
     Libraries::Pad::OrbisPadButtonDataOffset ApplyRemoteLocked(
         Libraries::Pad::OrbisPadButtonDataOffset buttons, const std::array<int, 6>& axes,
         bool touch_down, float touch_x, float touch_y);
+    void ApplyTouch(int touchIndex, bool touchDown, float x, float y);
+    /// Lets the right stick stand in for a finger on the touchpad (see controller.cpp).
+    void UpdateStickTouch();
 
+    // The touchpad's first finger is the real one's (the window's events) or the right
+    // stick's (a timer): what says which is kept together.
+    std::mutex m_finger_mutex;
+    bool m_finger_down = false;
+    bool m_touchpad_noted = false;
+    StickFinger m_stick_finger;
+    // On a gamepad without a touchpad, buttons do its gestures as well (see PadGestures).
+    PadGestures m_gestures;
+    bool m_gesture_press = false;
+    // The left shoulder button held, the stick turns the view instead (see ViewTurn).
+    ViewTurn m_view_turn;
+    bool m_stick_touch = false;
+    float m_stick_touch_x = 0.5f;
+    float m_stick_touch_y = 0.5f;
     std::atomic<bool> m_headset_plays{false};
-    u8 m_next_touch_id{1};
-    u64 m_touch_down_timestamp{};
-    u64 m_last_orientation_update{};
+    bool m_connected = false;
+    int m_connected_count = 0;
+    u8 m_touch_count = 0;
+    u8 m_secondary_touch_count = 0;
+    u8 m_previous_touchnum = 0;
+    bool m_was_secondary_reset = false;
+    std::chrono::steady_clock::time_point m_last_update = {};
+    Libraries::Pad::OrbisFQuaternion m_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     Colour colour;
     std::optional<Colour> override_colour{};
 
     State m_state;
 
-    std::mutex m_state_mutex;
+    std::mutex m_states_queue_mutex;
     RingBufferQueue<State> m_states_queue;
 };
 
@@ -165,6 +209,11 @@ public:
     static std::optional<u8> GetControllerIndexFromUserID(s32 user_id);
     static std::optional<u8> GetControllerIndexFromControllerID(s32 controller_id);
 
+    static void CalculateOrientation(Libraries::Pad::OrbisFVector3& acceleration,
+                                     Libraries::Pad::OrbisFVector3& angularVelocity,
+                                     float deltaTime,
+                                     Libraries::Pad::OrbisFQuaternion& lastOrientation,
+                                     Libraries::Pad::OrbisFQuaternion& orientation);
     void SetControllerCustomColor(s32 i, u8 r, u8 g, u8 b) {
         // reset to ensure the next function always runs, even if there already was a preexisting
         // override colour before

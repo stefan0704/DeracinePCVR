@@ -42,7 +42,6 @@ struct ErrorInfo {
 class Runner {
 public:
     static std::expected<Runner*, ErrorInfo> instance();
-    static void DestroyInstance();
 
     std::expected<void, ErrorInfo> run_raw(
         std::span<const std::uint32_t> spirv,
@@ -86,18 +85,23 @@ public:
         return result;
     }
 
-    bool supports_float64() const {
-        return supports_float64_;
-    }
-
     ~Runner();
     Runner(const Runner&) = delete;
     Runner& operator=(const Runner&) = delete;
+
+    // ── Accessors for Vulkan dispatch tests ──────────────────────────────────
+    vk::Device         device()          const { return device_; }
+    vk::PhysicalDevice physical_device() const { return physical_device_; }
+    vk::Queue          queue()           const { return queue_; }
+    std::uint32_t      queue_family()    const { return queue_family_; }
+
 
 private:
     Runner() = default;
     std::expected<void, ErrorInfo> initialize();
 
+    // Must outlive every Vulkan handle: members are destroyed in reverse declaration order.
+    vk::detail::DynamicLoader loader_;
     vk::Instance            instance_;
     vk::PhysicalDevice      physical_device_;
     vk::Device              device_;
@@ -110,7 +114,6 @@ private:
     vk::PipelineLayout      pipeline_layout_;
 
     std::uint32_t max_push_constant_size_ = 128;
-    bool supports_float64_ = false;
 };
 
 } // namespace gcn_test

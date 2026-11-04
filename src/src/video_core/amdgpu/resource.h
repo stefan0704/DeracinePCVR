@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <cstring>
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -14,8 +13,8 @@ namespace AmdGpu {
 
 // Table 8.5 Buffer Resource Descriptor [Sea Islands Series Instruction Set Architecture]
 struct Buffer {
-    u64 base_address : 40;
-    u64 _padding0 : 8;
+    u64 base_address : 44;
+    u64 _padding0 : 4;
     u64 stride : 14;
     u64 cache_swizzle : 1;
     u64 swizzle_enable : 1;
@@ -29,8 +28,7 @@ struct Buffer {
     u32 element_size : 2;
     u32 index_stride : 2;
     u32 add_tid_enable : 1;
-    u32 _padding1 : 3;
-    u32 mtype : 3;
+    u32 _padding1 : 6;
     u32 type : 2; // overlaps with T# type, so should be 0 for buffer
 
     static constexpr Buffer Null() {
@@ -226,11 +224,10 @@ struct Image {
     [[nodiscard]] u32 NumLayers() const noexcept {
         // Depth is the number of layers for Array images.
         u32 slices = depth + 1;
-        const auto image_type = GetType();
-        if (image_type == ImageType::Color3D) {
+        if (GetType() == ImageType::Color3D) {
             // Depth is the actual texture depth for 3D images.
             slices = 1;
-        } else if (image_type == ImageType::Cube) {
+        } else if (IsCube()) {
             // Depth is the number of full cubes for Cube images.
             slices *= 6;
         }
@@ -254,8 +251,12 @@ struct Image {
         return 1;
     }
 
+    bool IsCube() const noexcept {
+        return static_cast<ImageType>(type) == ImageType::Cube;
+    }
+
     ImageType GetType() const noexcept {
-        return static_cast<ImageType>(type);
+        return IsCube() ? ImageType::Color2DArray : static_cast<ImageType>(type);
     }
 
     DataFormat GetDataFmt() const noexcept {
@@ -297,8 +298,10 @@ struct Image {
         if (base_type == ImageType::Color1DArray) {
             return ImageType::Color1D;
         }
-        if (base_type == ImageType::Color2DArray || base_type == ImageType::Color2DMsaa ||
-            base_type == ImageType::Color2DMsaaArray || base_type == ImageType::Cube) {
+        if (base_type == ImageType::Color2DArray) {
+            return ImageType::Color2D;
+        }
+        if (base_type == ImageType::Color2DMsaa || base_type == ImageType::Color2DMsaaArray) {
             return ImageType::Color2D;
         }
         return base_type;
@@ -306,6 +309,10 @@ struct Image {
 
     ImageType GetViewType(const bool is_array) const noexcept {
         const auto base_type = GetType();
+        if (IsCube()) {
+            // Cube needs to remain array type regardless of instruction array specifier.
+            return base_type;
+        }
         if (base_type == ImageType::Color1DArray && !is_array) {
             return ImageType::Color1D;
         }
@@ -365,6 +372,23 @@ enum class AnisoRatio : u64 {
     Eight,
     Sixteen,
 };
+
+/// GCN TEX max_aniso is 3 bits. 0-4 are 1/2/4/8/16. 5-7 are reserved; treat as 16.
+[[nodiscard]] constexpr float AnisoRatioToFloat(AnisoRatio ratio) noexcept {
+    switch (ratio) {
+    case AnisoRatio::One:
+        return 1.0f;
+    case AnisoRatio::Two:
+        return 2.0f;
+    case AnisoRatio::Four:
+        return 4.0f;
+    case AnisoRatio::Eight:
+        return 8.0f;
+    case AnisoRatio::Sixteen:
+    default:
+        return 16.0f;
+    }
+}
 
 enum class DepthCompare : u64 {
     Never = 0,
@@ -450,8 +474,7 @@ struct Sampler {
     }
 
     bool Valid() const {
-        return max_aniso.Value() <= AnisoRatio::Sixteen && filter_mode.Value() <= FilterMode::Max &&
-               mip_filter.Value() <= MipFilter::Linear;
+        return true;
     }
 
     bool operator==(const Sampler& other) const noexcept {
@@ -472,20 +495,7 @@ struct Sampler {
     }
 
     float MaxAniso() const {
-        switch (max_aniso.Value()) {
-        case AnisoRatio::One:
-            return 1.0f;
-        case AnisoRatio::Two:
-            return 2.0f;
-        case AnisoRatio::Four:
-            return 4.0f;
-        case AnisoRatio::Eight:
-            return 8.0f;
-        case AnisoRatio::Sixteen:
-            return 16.0f;
-        default:
-            UNREACHABLE();
-        }
+        return AnisoRatioToFloat(max_aniso.Value());
     }
 };
 

@@ -10,7 +10,6 @@ namespace VideoCore {
 
 using ImageId = Common::SlotId;
 using ImageViewId = Common::SlotId;
-using SamplerId = Common::SlotId;
 
 struct Offset2D {
     s32 x;
@@ -54,30 +53,24 @@ struct SubresourceLayers {
 };
 
 struct SubresourceBase {
-    u16 level = 0;
-    u16 layer = 0;
+    u32 level = 0;
+    u32 layer = 0;
 
     auto operator<=>(const SubresourceBase&) const = default;
 };
 
 struct SubresourceExtent {
-    u16 levels = 1;
-    u16 layers = 1;
+    u32 levels = 1;
+    u32 layers = 1;
 
     auto operator<=>(const SubresourceExtent&) const = default;
-
-    // True if an image with this extent can serve every subresource of `other`. The defaulted
-    // operators compare levels first and layers only on a tie, which cannot answer this.
-    bool Contains(const SubresourceExtent& other) const noexcept {
-        return levels >= other.levels && layers >= other.layers;
-    }
 };
 
 struct SubresourceRange {
     SubresourceBase base;
     SubresourceExtent extent;
 
-    bool operator==(const SubresourceRange&) const = default;
+    auto operator<=>(const SubresourceRange&) const = default;
 };
 
 struct ImageCopy {

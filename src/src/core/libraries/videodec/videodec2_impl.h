@@ -1,11 +1,9 @@
-// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
-#include <memory>
 #include <vector>
-#include <queue>
 
 #include "videodec2.h"
 
@@ -16,6 +14,8 @@ extern "C" {
 }
 
 namespace Libraries::Videodec2 {
+
+extern std::vector<OrbisVideodec2AvcPictureInfo> gPictureInfos;
 
 class VdecDecoder {
 public:
@@ -29,24 +29,11 @@ public:
     s32 Reset();
 
 private:
-    static void ReleaseAVPacket(AVPacket* packet);
-    static void ReleaseAVFrame(AVFrame* frame);
-    static void ReleaseAVCodecContext(AVCodecContext* context);
-    static void ReleaseSwsContext(SwsContext* context);
-
-    using AVPacketPtr = std::unique_ptr<AVPacket, decltype(&ReleaseAVPacket)>;
-    using AVFramePtr = std::unique_ptr<AVFrame, decltype(&ReleaseAVFrame)>;
-    using AVCodecContextPtr = std::unique_ptr<AVCodecContext, decltype(&ReleaseAVCodecContext)>;
-    using SwsContextPtr = std::unique_ptr<SwsContext, decltype(&ReleaseSwsContext)>;
-
-    void DrainFrames();
-    AVFramePtr ConvertNV12Frame(AVFrame& frame);
+    AVFrame* ConvertNV12Frame(AVFrame& frame);
 
 private:
-    AVCodecContextPtr m_codec_context{nullptr, &ReleaseAVCodecContext};
-    SwsContextPtr m_sws_context{nullptr, &ReleaseSwsContext};
-    std::queue<AVFramePtr> m_frame_queue;
-    OrbisVideodec2DecoderConfigInfo m_config_info{};
+    AVCodecContext* mCodecContext = nullptr;
+    SwsContext* mSwsContext = nullptr;
 };
 
 } // namespace Libraries::Videodec2

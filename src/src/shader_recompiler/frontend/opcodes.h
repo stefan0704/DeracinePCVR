@@ -2697,8 +2697,6 @@ struct SendMsgSimm {
 
     Message msg : 4;
     GsOp op : 2;
-    u32 : 2;
-    u32 stream : 2;
 };
 
 } // namespace Shader::Gcn

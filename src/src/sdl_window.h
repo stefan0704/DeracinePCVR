@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <span>
 #include <string>
 
 #include "common/types.h"
@@ -72,7 +71,7 @@ public:
         return window_info;
     }
 
-    void SetIcon(std::span<const u8> png_data);
+    void SetIcon(const std::filesystem::path& path);
 
     void WaitEvent();
     void InitTimers();

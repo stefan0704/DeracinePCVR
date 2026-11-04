@@ -50,7 +50,7 @@ private:
         return output.Write(pcm_data.subspan(0, pcm_size));
     }
 
-    bool ParseRIFFHeader(std::span<u8>& input, AjmInstanceGapless& gapless);
+    void ParseRIFFHeader(std::span<u8>& input, AjmInstanceGapless& gapless);
 
     const AjmFormatEncoding m_format;
     const AjmAt9CodecFlags m_flags;

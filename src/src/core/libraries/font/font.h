@@ -1,15 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-
 #pragma once
-
-#include <cstddef>
+#include <cstdint>
 #include "common/types.h"
-
 namespace Core::Loader {
 class SymbolsResolver;
 }
-
 namespace Libraries::Font {
 
 struct OrbisFontHandleOpaque {
@@ -771,5 +767,5 @@ s32 PS4_SYSV_ABI Func_EAC96B2186B71E14();
 s32 PS4_SYSV_ABI Func_FE4788A96EF46256();
 s32 PS4_SYSV_ABI Func_FE7E5AE95D3058F5();
 
-void RegisterLib(Core::Loader::SymbolsResolver* sym);
+void RegisterlibSceFont(Core::Loader::SymbolsResolver* sym);
 } // namespace Libraries::Font

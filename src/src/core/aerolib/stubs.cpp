@@ -1,74 +1,102 @@
-// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <memory>
-#include <mutex>
-#include <string>
-#include <vector>
-
-#include <xbyak/xbyak.h>
+#include <atomic>
+#include <cstring>
 
 #include "common/logging/log.h"
 #include "core/aerolib/aerolib.h"
 #include "core/aerolib/stubs.h"
+#include "core/libraries/kernel/file_system.h"
 
 namespace Core::AeroLib {
 
 // Helper to provide stub implementations for missing functions
 //
-// This works by constructing a minimal trampoline for each new stub which then jumps to a common
-// handler with its index provided as a parameter so nid info can be found
+// This works by pre-compiling generic stub functions ("slots"), and then
+// on lookup, setting up the nid_entry they are matched with
+//
+// If it runs out of stubs with name information, it will return
+// a default implementation without function name details
 
-struct StubEntry {
-    const NidEntry* nid = nullptr;
-    std::string nid_unknown;
-    std::unique_ptr<Xbyak::CodeGenerator> code;
-};
+// Bloodborne's eboot plus late-loaded libc exceeds 8192 imports. Keep enough named slots for the
+// libc/FIOS boundary so missing imports remain diagnosable and can be routed to HLE functions.
+constexpr u32 MAX_STUBS = 12288;
 
-static std::vector<StubEntry> g_stub_entries;
-static std::mutex g_stub_mutex;
+u64 UnresolvedStub() {
+    LOG_ERROR(Core, "Returning zero to {}", __builtin_return_address(0));
+    return 0;
+}
 
-static u64 PS4_SYSV_ABI CommonStub(u64 index) {
-    const auto& e = g_stub_entries[index];
-    if (e.nid) {
-        LOG_ERROR(Core, "Stub: {} (nid: {}) called, returning zero to {}", e.nid->name, e.nid->nid,
-                  __builtin_return_address(0));
-    } else {
-        LOG_ERROR(Core, "Stub: Unknown (nid: {}) called, returning zero to {}", e.nid_unknown,
-                  __builtin_return_address(0));
+static u64 UnknownStub(u64 arg0, u64 arg1, u64 arg2, u64 arg3, u64 arg4, u64 arg5) {
+    static std::atomic_uint32_t traces{};
+    if (traces.fetch_add(1, std::memory_order_relaxed) < 256) {
+        LOG_ERROR(Core,
+                  "UnknownStub caller={} args={:#x},{:#x},{:#x},{:#x},{:#x},{:#x}; returning zero",
+                  __builtin_return_address(0), arg0, arg1, arg2, arg3, arg4, arg5);
     }
     return 0;
 }
 
-u64 GetStub(const char* nid) {
-    std::scoped_lock lock{g_stub_mutex};
+static const NidEntry* stub_nids[MAX_STUBS];
+static std::string stub_nids_unknown[MAX_STUBS];
 
-    if (g_stub_entries.empty()) {
-        g_stub_entries.reserve(500);
-    }
-
-    const u64 index = g_stub_entries.size();
-
-    StubEntry e;
-    if (const auto* entry = FindByNid(nid)) {
-        if (auto const& it = std::ranges::find_if(
-                g_stub_entries, [entry](StubEntry const& en) { return en.nid && en.nid == entry; });
-            it != g_stub_entries.end()) {
-            return reinterpret_cast<u64>(it->code->getCode());
-        }
-        e.nid = entry;
+static u64 CommonStub(int stub_index, void* addr) {
+    auto entry = stub_nids[stub_index];
+    if (entry) {
+        LOG_ERROR(Core, "Stub: {} (nid: {}) called, returning zero to {}", entry->name, entry->nid,
+                  addr);
     } else {
-        e.nid_unknown = nid;
+        LOG_ERROR(Core, "Stub: Unknown (nid: {}) called, returning zero to {}",
+                  stub_nids_unknown[stub_index], addr);
+    }
+    return 0;
+}
+
+template <int stub_index>
+static u64 CommonStubTemplate() {
+    return CommonStub(stub_index, __builtin_return_address(0));
+}
+
+template <size_t... Is>
+consteval auto MakeStubArray(std::index_sequence<Is...>) {
+    return std::array<u64 (*)(), sizeof...(Is)>{&CommonStubTemplate<Is>...};
+}
+
+constexpr auto stub_handlers = MakeStubArray(std::make_index_sequence<MAX_STUBS>{});
+static u32 UsedStubEntries;
+
+u64 GetStub(const char* nid) {
+    // These heavily used file APIs occur after the named-stub capacity in the generated aerolib
+    // table. LLE modules such as Bloodborne's libc still import them late, so preserve their HLE
+    // implementations instead of collapsing them to UnknownStub.
+    if (std::strcmp(nid, "AqBioC2vF3I") == 0) {
+        return reinterpret_cast<u64>(&Libraries::Kernel::posix_read);
+    }
+    if (std::strcmp(nid, "Cg4srZ6TKbU") == 0) {
+        return reinterpret_cast<u64>(&Libraries::Kernel::sceKernelRead);
+    }
+    if (std::strcmp(nid, "Oy6IpwgtYOk") == 0) {
+        return reinterpret_cast<u64>(&Libraries::Kernel::posix_lseek);
+    }
+    if (std::strcmp(nid, "oib76F-12fk") == 0) {
+        return reinterpret_cast<u64>(&Libraries::Kernel::sceKernelLseek);
+    }
+    if (std::strcmp(nid, "kBwCPsYX-m4") == 0) {
+        return reinterpret_cast<u64>(&Libraries::Kernel::sceKernelFstat);
+    }
+    if (UsedStubEntries >= MAX_STUBS) {
+        return (u64)&UnknownStub;
     }
 
-    e.code = std::make_unique<Xbyak::CodeGenerator>(32, Xbyak::AutoGrow);
-    e.code->mov(e.code->rdi, index);
-    e.code->mov(e.code->rax, reinterpret_cast<u64>(&CommonStub));
-    e.code->jmp(e.code->rax);
-    e.code->ready();
+    const auto entry = FindByNid(nid);
+    if (!entry) {
+        stub_nids_unknown[UsedStubEntries] = nid;
+    } else {
+        stub_nids[UsedStubEntries] = entry;
+    }
 
-    g_stub_entries.push_back(std::move(e));
-    return reinterpret_cast<u64>(g_stub_entries.back().code->getCode());
+    return (u64)stub_handlers[UsedStubEntries++];
 }
 
 } // namespace Core::AeroLib

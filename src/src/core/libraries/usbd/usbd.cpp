@@ -33,7 +33,11 @@ bool s_has_removed_driver = false;
 s32 PS4_SYSV_ABI sceUsbdInit() {
     LOG_DEBUG(Lib_Usbd, "called");
 
-    return libusb_to_orbis_error(usb_backend->Init());
+    const s32 result = libusb_to_orbis_error(usb_backend->Init());
+    if (!UsbHostPresent()) {
+        LOG_WARNING(Lib_Usbd, "USB host not present; event pump will idle");
+    }
+    return result;
 }
 
 void PS4_SYSV_ABI sceUsbdExit() {

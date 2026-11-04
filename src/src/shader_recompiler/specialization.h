@@ -23,6 +23,7 @@ struct VsAttribSpecialization {
 
 struct BufferSpecialization {
     u32 stride : 14;
+    u32 is_storage : 1;
     u32 is_formatted : 1;
     u32 swizzle_enable : 1;
     u32 data_format : 6;
@@ -33,8 +34,8 @@ struct BufferSpecialization {
     AmdGpu::NumberConversion num_conversion{};
 
     bool operator==(const BufferSpecialization& other) const {
-        return stride == other.stride && is_formatted == other.is_formatted &&
-               swizzle_enable == other.swizzle_enable &&
+        return stride == other.stride && is_storage == other.is_storage &&
+               is_formatted == other.is_formatted && swizzle_enable == other.swizzle_enable &&
                (!is_formatted ||
                 (data_format == other.data_format && num_format == other.num_format &&
                  dst_select == other.dst_select && num_conversion == other.num_conversion)) &&
@@ -45,8 +46,10 @@ struct BufferSpecialization {
 
 struct ImageSpecialization {
     AmdGpu::ImageType type = AmdGpu::ImageType::Color2D;
+    bool is_1d_hosted_as_2d = false;
     bool is_integer = false;
     bool is_storage = false;
+    bool is_cube = false;
     bool is_srgb = false;
     AmdGpu::CompMapping dst_select{};
     AmdGpu::NumberConversion num_conversion{};
@@ -82,32 +85,35 @@ struct StageSpecialization {
     const Info* info{};
     RuntimeInfo runtime_info{};
     std::bitset<MaxStageResources> bitset{};
-    Gcn::FetchShaderData fetch_shader_data{};
-    SmallVector<VsAttribSpecialization, 32> vs_attribs;
-    SmallVector<BufferSpecialization, 16> buffers;
-    SmallVector<ImageSpecialization, 16> images;
-    SmallVector<FMaskSpecialization, 8> fmasks;
-    SmallVector<SamplerSpecialization, 16> samplers;
+    std::optional<Gcn::FetchShaderData> fetch_shader_data{};
+    boost::container::small_vector<VsAttribSpecialization, 32> vs_attribs;
+    boost::container::small_vector<BufferSpecialization, 16> buffers;
+    boost::container::small_vector<ImageSpecialization, 16> images;
+    boost::container::small_vector<FMaskSpecialization, 8> fmasks;
+    boost::container::small_vector<SamplerSpecialization, 16> samplers;
     Backend::Bindings start{};
 
     StageSpecialization() = default;
     StageSpecialization(const Info& info_, RuntimeInfo runtime_info_, const Profile& profile_,
                         Backend::Bindings start_)
         : info{&info_}, runtime_info{runtime_info_}, start{start_} {
-        if (info_.sw_stage == SwStage::Vertex && Gcn::ParseFetchShader(info_, fetch_shader_data)) {
+        fetch_shader_data = Gcn::ParseFetchShader(info_);
+        if (info_.stage == Stage::Vertex && fetch_shader_data) {
             // Specialize shader on VS input number types to follow spec.
-            ForEachSharp(vs_attribs, fetch_shader_data.attributes,
-                         [this](auto& spec, const auto& desc, AmdGpu::Buffer sharp) {
+            ForEachSharp(vs_attribs, fetch_shader_data->attributes,
+                         [&profile_, this](auto& spec, const auto& desc, AmdGpu::Buffer sharp) {
                              using InstanceIdType = Shader::Gcn::VertexAttribute::InstanceIdType;
                              if (const auto step_rate = desc.GetStepRate();
                                  step_rate != InstanceIdType::None) {
                                  spec.divisor = step_rate == InstanceIdType::OverStepRate0
-                                                    ? runtime_info.sw.vs.step_rate_0
+                                                    ? runtime_info.vs_info.step_rate_0
                                                     : (step_rate == InstanceIdType::OverStepRate1
-                                                           ? runtime_info.sw.vs.step_rate_1
+                                                           ? runtime_info.vs_info.step_rate_1
                                                            : 1);
                              }
-                             spec.num_class = AmdGpu::GetNumberClass(sharp.GetNumberFmt());
+                             spec.num_class = profile_.support_legacy_vertex_attributes
+                                                  ? AmdGpu::NumberClass{}
+                                                  : AmdGpu::GetNumberClass(sharp.GetNumberFmt());
                              spec.dst_select = sharp.DstSelect();
                          });
         }
@@ -115,6 +121,7 @@ struct StageSpecialization {
         ForEachSharp(binding, buffers, info->buffers,
                      [](auto& spec, const auto& desc, AmdGpu::Buffer sharp) {
                          spec.stride = sharp.GetStride();
+                         spec.is_storage = desc.IsStorage(sharp);
                          spec.is_formatted = desc.is_formatted;
                          spec.swizzle_enable = sharp.swizzle_enable;
                          if (spec.is_formatted) {
@@ -128,11 +135,21 @@ struct StageSpecialization {
                              spec.element_size = sharp.element_size;
                          }
                      });
+        // The kind of a buffer slot with nothing valid bound to it as well: the descriptor
+        // bound there (BindBuffers) is of the kind the same question gives.
+        for (u32 i = 0; i < info->buffers.size(); ++i) {
+            if (!bitset[i]) {
+                const auto& desc = info->buffers[i];
+                buffers[i].is_storage = desc.IsStorage(desc.GetSharp(*info));
+            }
+        }
         ForEachSharp(binding, images, info->images,
                      [&](auto& spec, const auto& desc, AmdGpu::Image sharp) {
-                         spec.type = sharp.GetViewType(desc.is_array);
+                         spec.type = desc.GetHostViewType(sharp);
+                         spec.is_1d_hosted_as_2d = desc.Is1DHostedAs2D(sharp);
                          spec.is_integer = AmdGpu::IsInteger(sharp.GetNumberFmt());
                          spec.is_storage = desc.is_written;
+                         spec.is_cube = sharp.IsCube();
                          if (spec.is_storage) {
                              spec.dst_select = sharp.DstSelect();
                          } else {
@@ -153,8 +170,8 @@ struct StageSpecialization {
                      });
 
         // Initialize runtime_info fields that rely on analysis in tessellation passes
-        if (info->sw_stage == SwStage::TessellationControl ||
-            info->sw_stage == SwStage::TessellationEval) {
+        if (info->l_stage == LogicalStage::TessellationControl ||
+            info->l_stage == LogicalStage::TessellationEval) {
             TessellationDataConstantBuffer tess_constants{};
             info->ReadTessConstantBuffer(tess_constants);
             runtime_info.InitFromTessConstants(tess_constants);
@@ -180,7 +197,7 @@ struct StageSpecialization {
                 binding++;
                 continue;
             }
-            bitset[binding++] = true;
+            bitset.set(binding++);
             func(spec, desc, sharp);
         }
     }
@@ -214,7 +231,7 @@ struct StageSpecialization {
         // bindings still may change as they depend on previously processed FS. The check below
         // handles this case and prevents generation of redundant permutations. This is also safe
         // for other types of shaders with no bindings.
-        if (buffers.empty() && images.empty() && samplers.empty()) {
+        if (bitset.none() && other.bitset.none()) {
             return true;
         }
 
@@ -224,6 +241,11 @@ struct StageSpecialization {
 
         u32 binding{};
         for (u32 i = 0; i < buffers.size(); i++) {
+            // Whether a slot is a storage or a uniform buffer, also where nothing valid is bound
+            // to it: the shader declares it so, and the binding has to be of the same kind.
+            if (buffers[i].is_storage != other.buffers[i].is_storage) {
+                return false;
+            }
             if (other.bitset[binding++] && buffers[i] != other.buffers[i]) {
                 return false;
             }

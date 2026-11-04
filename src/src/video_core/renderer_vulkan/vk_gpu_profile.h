@@ -13,11 +13,6 @@
 
 namespace Vulkan {
 
-struct FrameStats {
-    static constexpr bool AbOff(const char* = nullptr) noexcept { return false; }
-    static void EndFrame() noexcept {}
-};
-
 class Instance;
 class Scheduler;
 
@@ -54,13 +49,11 @@ public:
     GpuProfile& operator=(const GpuProfile&) = delete;
 
     /// Whether SHADPS4_GPU_PROFILE asks for it.
-    static bool Enabled() {
-        return false;
-    }
+    static bool Enabled();
 
     /// The GPU thread is through a frame. Called where it hands a frame on; the profile itself
     /// looks at the count with its next draw.
-    static void NoteFrameDone() {}
+    static void NoteFrameDone();
 
     /// What the emulator itself has the GPU do between the title's draws. While a frame is
     /// timed, it is counted for the draw that comes next and listed with its run.
@@ -116,5 +109,3 @@ private:
 };
 
 } // namespace Vulkan
-
-using FrameStats = Vulkan::FrameStats;

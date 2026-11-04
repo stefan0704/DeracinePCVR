@@ -15,6 +15,7 @@
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/vr_tracker/vr_tracker.h"
+#include "core/known_title.h"
 #include "core/libraries/vr_tracker/vr_tracker_error.h"
 #include "core/memory.h"
 #include "core/vr/vr_runtime.h"
@@ -470,6 +471,7 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         OrbisVrTrackerHmdRearTrackingStatus::ORBIS_VR_TRACKER_REAR_TRACKING_READY;
     hmd.sensor_read_system_timestamp = now;
 
+    Core::KnownTitle::NoteView(state.pose.position);
     return ORBIS_OK;
 }
 

@@ -8,7 +8,9 @@
 #include <libusb.h>
 
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "common/types.h"
+#include "core/libraries/usbd/usbd_event_loop.h"
 
 namespace Libraries::Usbd {
 
@@ -125,14 +127,19 @@ protected:
 class UsbRealBackend : public UsbBackend {
 public:
     s32 Init() override {
-        return libusb_init(&g_libusb_context);
+        const s32 result = libusb_init(&g_libusb_context);
+        if (result != 0) {
+            g_libusb_context = nullptr;
+            LOG_ERROR(Lib_Usbd, "libusb_init failed: {}", libusb_error_name(result));
+        }
+        return result;
     }
     void Exit() override {
         libusb_exit(g_libusb_context);
     }
 
     s64 GetDeviceList(libusb_device*** list) override {
-        return libusb_get_device_list(g_libusb_context, list);
+        return GetDeviceListSafe(g_libusb_context, list);
     }
     void FreeDeviceList(libusb_device** list, s32 unref_devices) override {
         libusb_free_device_list(list, unref_devices);
@@ -182,6 +189,9 @@ public:
         return libusb_claim_interface(dev_handle, interface_number);
     }
     libusb_device_handle* OpenDeviceWithVidPid(u16 vendor_id, u16 product_id) override {
+        if (g_libusb_context == nullptr) {
+            return nullptr;
+        }
         return libusb_open_device_with_vid_pid(g_libusb_context, vendor_id, product_id);
     }
     s32 ResetDevice(libusb_device_handle* dev_handle) override {
@@ -221,39 +231,71 @@ public:
         return libusb_submit_transfer(transfer);
     }
 
+    libusb_context* EventContext() const {
+        return EffectiveEventContext(g_libusb_context, UsbHostPresent());
+    }
+
     s32 TryLockEvents() override {
-        return libusb_try_lock_events(g_libusb_context);
+        auto* ctx = EventContext();
+        if (ctx == nullptr) {
+            return 1;
+        }
+        return libusb_try_lock_events(ctx);
     }
     void LockEvents() override {
-        return libusb_lock_events(g_libusb_context);
+        auto* ctx = EventContext();
+        if (ctx == nullptr) {
+            return;
+        }
+        libusb_lock_events(ctx);
     }
     void UnlockEvents() override {
-        return libusb_unlock_events(g_libusb_context);
+        auto* ctx = EventContext();
+        if (ctx == nullptr) {
+            return;
+        }
+        libusb_unlock_events(ctx);
     }
     s32 EventHandlingOk() override {
-        return libusb_event_handling_ok(g_libusb_context);
+        auto* ctx = EventContext();
+        if (ctx == nullptr) {
+            return 1;
+        }
+        return libusb_event_handling_ok(ctx);
     }
     s32 EventHandlerActive() override {
-        return libusb_event_handler_active(g_libusb_context);
+        auto* ctx = EventContext();
+        if (ctx == nullptr) {
+            return 0;
+        }
+        return libusb_event_handler_active(ctx);
     }
     void LockEventWaiters() override {
-        return libusb_lock_event_waiters(g_libusb_context);
+        auto* ctx = EventContext();
+        if (ctx == nullptr) {
+            return;
+        }
+        libusb_lock_event_waiters(ctx);
     }
     void UnlockEventWaiters() override {
-        return libusb_unlock_event_waiters(g_libusb_context);
+        auto* ctx = EventContext();
+        if (ctx == nullptr) {
+            return;
+        }
+        libusb_unlock_event_waiters(ctx);
     }
     s32 WaitForEvent(timeval* tv) override {
-        return libusb_wait_for_event(g_libusb_context, tv);
+        return WaitForEventSafe(EventContext(), tv);
     }
 
     s32 HandleEventsTimeout(timeval* tv) override {
-        return libusb_handle_events_timeout(g_libusb_context, tv);
+        return HandleEventsTimeoutSafe(EventContext(), tv);
     }
     s32 HandleEvents() override {
-        return libusb_handle_events(g_libusb_context);
+        return HandleEventsSafe(EventContext());
     }
     s32 HandleEventsLocked(timeval* tv) override {
-        return libusb_handle_events_locked(g_libusb_context, tv);
+        return HandleEventsTimeoutSafe(EventContext(), tv);
     }
 
     s32 CheckConnected(libusb_device_handle* dev) override {

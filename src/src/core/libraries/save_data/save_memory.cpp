@@ -1,11 +1,13 @@
-// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "save_memory.h"
 
+#include <algorithm>
 #include <condition_variable>
 #include <filesystem>
 #include <mutex>
+#include <span>
 #include <thread>
 #include <utility>
 #include <fmt/format.h>
@@ -128,10 +130,28 @@ size_t SetupSaveMemory(Libraries::UserService::OrbisUserServiceUserId user_id, u
 
     const auto memory = save_dir / FilenameSaveDataMemory;
     if (fs::exists(memory)) {
-        return fs::file_size(memory);
+        // What exists is the memory as it was set up, whatever of it reached the file: a title
+        // that finds another size than the one it asks for takes it for somebody else's and
+        // starts over.
+        return std::max<size_t>(fs::file_size(memory), memory_size);
     }
 
     return 0;
+}
+
+/// The memory is as large as the title set it up, and holds what the file has of it.
+static void LoadMemory(SlotData& data) {
+    auto& memory = data.memory_cache;
+    if (!memory.empty()) {
+        return;
+    }
+    memory.resize(data.memory_cache_size);
+    IOFile f{data.folder_path / FilenameSaveDataMemory, Common::FS::FileAccessMode::Read};
+    if (f.IsOpen()) {
+        const size_t stored = std::min<size_t>(f.GetSize(), memory.size());
+        f.Seek(0);
+        f.ReadSpan(std::span{memory.data(), stored});
+    }
 }
 
 void SetIcon(u32 slot_id, void* buf, size_t buf_size) {
@@ -139,15 +159,13 @@ void SetIcon(u32 slot_id, void* buf, size_t buf_size) {
     const auto& data = g_attached_slots[slot_id];
     const auto icon_path = data.folder_path / sce_sys / "icon0.png";
     if (buf == nullptr) {
+        const auto& src_icon = g_mnt->GetHostPath("/app0/sce_sys/save_data.png");
         if (fs::exists(icon_path)) {
             fs::remove(icon_path);
         }
-        // Read the source through the mount stack so archive-backed base
-        // games can seed save-slot icons too.
-        if (auto bytes = g_mnt->ReadFile("/app0/sce_sys/save_data.png")) {
+        if (fs::exists(src_icon)) {
             fs::create_directories(icon_path.parent_path());
-            IOFile dst(icon_path, Common::FS::FileAccessMode::Create);
-            dst.WriteRaw<u8>(bytes->data(), bytes->size());
+            fs::copy_file(src_icon, icon_path);
         }
     } else {
         IOFile file(icon_path, Common::FS::FileAccessMode::Create);
@@ -199,14 +217,7 @@ void ReadMemory(u32 slot_id, void* buf, size_t buf_size, int64_t offset) {
     std::lock_guard lk{g_slot_mtx};
     auto& data = g_attached_slots[slot_id];
     auto& memory = data.memory_cache;
-    if (memory.empty()) { // Load file
-        memory.resize(data.memory_cache_size);
-        IOFile f{data.folder_path / FilenameSaveDataMemory, Common::FS::FileAccessMode::Read};
-        if (f.IsOpen()) {
-            f.Seek(0);
-            f.ReadSpan(std::span{memory});
-        }
-    }
+    LoadMemory(data);
     s64 read_size = buf_size;
     if (read_size + offset > memory.size()) {
         read_size = memory.size() - offset;
@@ -218,6 +229,9 @@ void WriteMemory(u32 slot_id, void* buf, size_t buf_size, int64_t offset) {
     std::lock_guard lk{g_slot_mtx};
     auto& data = g_attached_slots[slot_id];
     auto& memory = data.memory_cache;
+    // A title that writes before it ever read would otherwise leave a file that ends with what
+    // it wrote, and lose whatever the file held beyond that.
+    LoadMemory(data);
     if (offset + buf_size > memory.size()) {
         memory.resize(offset + buf_size);
     }

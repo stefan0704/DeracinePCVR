@@ -18,6 +18,12 @@
 #include <semaphore>
 #endif
 
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+namespace Core::Fex {
+void FlushPendingGuestOrbisSignal() noexcept;
+} // namespace Core::Fex
+#endif
+
 namespace Libraries::Kernel {
 
 template <s64 max>
@@ -30,10 +36,10 @@ public:
     {
 #ifdef _WIN64
         sem = CreateSemaphore(nullptr, initialCount, max, nullptr);
-        ASSERT_MSG(sem != nullptr, "Failed to create Win32 semaphore");
+        ASSERT(sem);
 #elif defined(__APPLE__)
         sem = dispatch_semaphore_create(initialCount);
-        ASSERT_MSG(sem != nullptr, "Failed to create dispatch semaphore");
+        ASSERT(sem);
 #endif
     }
 
@@ -47,8 +53,7 @@ public:
 
     void release() {
 #ifdef _WIN64
-        ASSERT_MSG(ReleaseSemaphore(sem, 1, nullptr) != 0, "Failed to release Win32 semaphore: {}",
-                   GetLastError());
+        ReleaseSemaphore(sem, 1, nullptr);
 #elif defined(__APPLE__)
         dispatch_semaphore_signal(sem);
 #else
@@ -63,8 +68,6 @@ public:
             if (res == WAIT_OBJECT_0) {
                 return;
             }
-            ASSERT_MSG(res == WAIT_IO_COMPLETION,
-                       "Unexpected Win32 semaphore wait result {:#x}: {}", res, GetLastError());
         }
 #elif defined(__APPLE__)
         for (;;) {
@@ -74,7 +77,17 @@ public:
             }
         }
 #else
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+        for (;;) {
+            if (sem.try_acquire_for(std::chrono::milliseconds{25})) {
+                Core::Fex::FlushPendingGuestOrbisSignal();
+                return;
+            }
+            Core::Fex::FlushPendingGuestOrbisSignal();
+        }
+#else
         sem.acquire();
+#endif
 #endif
     }
 
@@ -88,56 +101,59 @@ public:
 #endif
     }
 
-    // Consume a pending permit without entering an alertable wait. Windows needs a dedicated
-    // non-alertable call; the native Darwin and standard C++ semaphore calls already behave so.
-    bool try_acquire_pending() {
-#ifdef _WIN64
-        return WaitForSingleObjectEx(sem, 0, false) == WAIT_OBJECT_0;
-#elif defined(__APPLE__)
-        return dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW) == 0;
-#else
-        return sem.try_acquire();
-#endif
-    }
-
     template <class Rep, class Period>
     bool try_acquire_for(const std::chrono::duration<Rep, Period>& rel_time) {
 #ifdef _WIN64
-        using Clock = std::chrono::steady_clock;
-        if (rel_time <= std::chrono::duration<Rep, Period>::zero()) {
-            return try_acquire_pending();
-        }
-
-        const auto now = Clock::now();
-        const auto clock_duration = std::chrono::duration_cast<Clock::duration>(rel_time);
-        const auto deadline = clock_duration < Clock::time_point::max() - now
-                                  ? now + clock_duration
-                                  : Clock::time_point::max();
-        for (;;) {
-            const auto current = Clock::now();
-            if (current >= deadline) {
-                return try_acquire_pending();
-            }
-
-            const auto remaining_ms =
-                std::chrono::ceil<std::chrono::milliseconds>(deadline - current);
-            constexpr auto MaxFiniteWait = static_cast<s64>(INFINITE) - 1;
-            const DWORD timeout_ms =
-                static_cast<DWORD>(std::min<s64>(remaining_ms.count(), MaxFiniteWait));
-            const DWORD res = WaitForSingleObjectEx(sem, timeout_ms, true);
+        auto rel_time_ms = std::chrono::ceil<std::chrono::milliseconds>(rel_time);
+        do {
+            const auto start_time = std::chrono::high_resolution_clock::now();
+            u64 timeout_ms = static_cast<u64>(rel_time_ms.count());
+            u64 res = WaitForSingleObjectEx(sem, timeout_ms, true);
             if (res == WAIT_OBJECT_0) {
                 return true;
-            }
-            if (res != WAIT_IO_COMPLETION && res != WAIT_TIMEOUT) {
+            } else if (res == WAIT_IO_COMPLETION) {
+                auto elapsed_time = std::chrono::high_resolution_clock::now() - start_time;
+                rel_time_ms -= std::chrono::duration_cast<std::chrono::milliseconds>(elapsed_time);
+            } else {
                 return false;
             }
-        }
+        } while (rel_time_ms.count() > 0);
+
+        return false;
 #elif defined(__APPLE__)
         const auto rel_time_ns = std::chrono::ceil<std::chrono::nanoseconds>(rel_time);
         const auto timeout = dispatch_time(DISPATCH_TIME_NOW, rel_time_ns.count());
         return dispatch_semaphore_wait(sem, timeout) == 0;
 #else
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+        const auto deadline = std::chrono::steady_clock::now() + rel_time;
+        // Handle non-positive duration: immediate try then flush.
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                const bool acquired = sem.try_acquire();
+                Core::Fex::FlushPendingGuestOrbisSignal();
+                return acquired;
+            }
+        }
+        for (;;) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                Core::Fex::FlushPendingGuestOrbisSignal();
+                return false;
+            }
+            auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now);
+            auto slice = std::min(remaining,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds{25}));
+            if (sem.try_acquire_for(slice)) {
+                Core::Fex::FlushPendingGuestOrbisSignal();
+                return true;
+            }
+            Core::Fex::FlushPendingGuestOrbisSignal();
+        }
+#else
         return sem.try_acquire_for(rel_time);
+#endif
 #endif
     }
 
@@ -145,7 +161,7 @@ public:
     bool try_acquire_until(const std::chrono::time_point<Clock, Duration>& abs_time) {
         const auto current = Clock::now();
         if (current >= abs_time) {
-            return try_acquire_pending();
+            return try_acquire();
         }
         return try_acquire_for(abs_time - current);
     }
@@ -161,8 +177,6 @@ private:
 };
 
 using BinarySemaphore = Semaphore<1>;
-// A thread can receive one normal synchronization wake and one cancellation wake concurrently.
-using WakeSemaphore = Semaphore<2>;
 using CountingSemaphore = Semaphore<0x7FFFFFFF /*ORBIS_KERNEL_SEM_VALUE_MAX*/>;
 
 } // namespace Libraries::Kernel

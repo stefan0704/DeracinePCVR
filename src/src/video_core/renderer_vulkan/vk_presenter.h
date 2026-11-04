@@ -11,9 +11,7 @@
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
 #include "video_core/renderer_vulkan/host_passes/pp_pass.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
-#include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
-#include "video_core/renderer_vulkan/vk_semaphore.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/renderer_vulkan/vk_vr_exporter.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -40,7 +38,7 @@ struct Frame {
     vk::ImageView image_view;
     vk::Fence present_done;
     /// The timeline the frame's commands were submitted on, and its tick once they have run.
-    Semaphore* ready_timeline{};
+    MasterSemaphore* ready_timeline{};
     vk::Semaphore ready_semaphore;
     u64 ready_tick;
     bool is_hdr{false};
@@ -166,7 +164,6 @@ private:
     Scheduler present_scheduler;
     Scheduler flip_scheduler;
     Swapchain swapchain;
-    Runtime runtime;
     std::unique_ptr<Rasterizer> rasterizer;
     std::unique_ptr<VrExporter> vr_exporter;
     VideoCore::TextureCache& texture_cache;

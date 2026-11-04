@@ -4,13 +4,10 @@
 #pragma once
 
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
-#include <optional>
 #include <span>
 #include <type_traits>
 
-#include "common/assert.h"
 #include "common/concepts.h"
 #include "common/types.h"
 #include "enum.h"
@@ -71,28 +68,6 @@ enum class SeekOrigin : u32 {
     End,             // Seeks from the end of the file.
 };
 
-struct FileIdentity {
-    u64 device{};
-    u64 file_hi{};
-    u64 file_lo{};
-
-    bool operator==(const FileIdentity&) const = default;
-};
-
-struct FileInfo {
-    FileIdentity identity{};
-    u64 size{};
-    s64 mtime_sec{};
-    s64 mtime_nsec{};
-    s64 atime_sec{};
-    s64 atime_nsec{};
-    s64 ctime_sec{};
-    s64 ctime_nsec{};
-    bool is_directory{};
-};
-
-[[nodiscard]] std::optional<FileInfo> GetFileInfo(const std::filesystem::path& path);
-
 class IOFile final {
 public:
     IOFile();
@@ -151,7 +126,6 @@ public:
 
     bool SetSize(u64 size) const;
     u64 GetSize() const;
-    [[nodiscard]] std::optional<FileInfo> GetInfo() const;
 
     bool Seek(s64 offset, SeekOrigin origin = SeekOrigin::SetOrigin) const;
     s64 Tell() const;
@@ -194,9 +168,7 @@ public:
 
     template <typename T>
     size_t ReadRaw(void* data, size_t size) const {
-        u64 read = std::fread(data, sizeof(T), size, file);
-        ASSERT_MSG(std::ferror(file) == 0, "Failed to read file, error = {}", std::strerror(errno));
-        return read;
+        return std::fread(data, sizeof(T), size, file);
     }
 
     template <typename T>
@@ -207,11 +179,7 @@ public:
             return 0;
         }
 
-        u64 written = std::fwrite(data.data(), sizeof(T), data.size(), file);
-        ASSERT_MSG(std::ferror(file) == 0, "Failed to write to file, error = {}",
-                   std::strerror(errno));
-        std::fflush(file);
-        return written;
+        return std::fwrite(data.data(), sizeof(T), data.size(), file);
     }
 
     template <typename T>
@@ -223,16 +191,12 @@ public:
             return false;
         }
 
-        bool success = std::fread(&object, sizeof(T), 1, file) == 1;
-        ASSERT_MSG(std::ferror(file) == 0, "Failed to read file, error = {}", std::strerror(errno));
-        return success;
+        return std::fread(&object, sizeof(T), 1, file) == 1;
     }
 
     template <typename T>
     size_t WriteRaw(const void* data, size_t size) const {
-        u64 bytes = std::fwrite(data, sizeof(T), size, file);
-        ASSERT_MSG(std::ferror(file) == 0, "Failed to write to file, error = {}",
-                   std::strerror(errno));
+        auto bytes = std::fwrite(data, sizeof(T), size, file);
         std::fflush(file);
         return bytes;
     }
@@ -246,10 +210,7 @@ public:
             return false;
         }
 
-        u64 bytes = std::fwrite(&object, sizeof(T), 1, file) == 1;
-        ASSERT_MSG(std::ferror(file) == 0, "Failed to read file, error = {}", std::strerror(errno));
-        std::fflush(file);
-        return bytes;
+        return std::fwrite(&object, sizeof(T), 1, file) == 1;
     }
 
     std::string ReadString(size_t length) const;
