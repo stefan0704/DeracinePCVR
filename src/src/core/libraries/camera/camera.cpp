@@ -10,6 +10,8 @@
 #include "core/libraries/kernel/memory.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
+#include "core/libraries/kernel/time.h"
+#include "core/vr/vr_runtime.h"
 #include "core/memory.h"
 
 #include <utility>
@@ -30,6 +32,77 @@ static u8 *raw8_buffer1{}, *raw8_buffer2{};
 
 SDL_Camera* sdl_camera = nullptr;
 OrbisCameraConfigExtention output_config0, output_config1;
+
+static constexpr u64 VirtualFramePeriodUs = 1000000 / 60;
+static std::vector<u8> g_virtual_frame;
+static bool g_virtual_started = false;
+static u64 g_virtual_frame_count = 0;
+static u64 g_virtual_next_frame_time = 0;
+static u64 g_virtual_frame_time = 0;
+static OrbisCameraExposureGain g_virtual_exposure_gain[ORBIS_CAMERA_MAX_DEVICE_NUM]{};
+
+bool IsVirtualCamera() {
+    return Core::Vr::Runtime::Instance().IsHeadsetConnected();
+}
+
+bool IsCameraConnected() {
+    return IsVirtualCamera() || EmulatorSettings.GetCameraId() != -1;
+}
+
+static s32 GetVirtualFrameData(OrbisCameraFrameData* frame_data) {
+    if (!g_virtual_started) {
+        return ORBIS_CAMERA_ERROR_NOT_START;
+    }
+
+    static constexpr u32 ReadModeWaitNextFrame = 1;
+    if ((frame_data->readMode & ReadModeWaitNextFrame) != 0 || g_virtual_frame_count == 0) {
+        const u64 now = Libraries::Kernel::sceKernelGetProcessTime();
+        if (g_virtual_next_frame_time > now) {
+            std::this_thread::sleep_for(
+                std::chrono::microseconds(g_virtual_next_frame_time - now));
+        }
+        g_virtual_frame_time = Libraries::Kernel::sceKernelGetProcessTime();
+        g_virtual_next_frame_time =
+            std::max(g_virtual_next_frame_time, g_virtual_frame_time) + VirtualFramePeriodUs;
+        ++g_virtual_frame_count;
+    }
+    const u64 timestamp = g_virtual_frame_time;
+    const u64 frame_number = g_virtual_frame_count - 1;
+
+    OrbisCameraFrameData frame{};
+    const OrbisCameraConfigExtention* configs[ORBIS_CAMERA_MAX_DEVICE_NUM] = {&output_config0,
+                                                                              &output_config1};
+    for (s32 device = 0; device < ORBIS_CAMERA_MAX_DEVICE_NUM; ++device) {
+        for (s32 level = 0; level < ORBIS_CAMERA_MAX_FORMAT_LEVEL_NUM; ++level) {
+            const u32 width = c_width >> level;
+            const u32 height = c_height >> level;
+            frame.framePosition[device][level] = {0, 0, width, height};
+            frame.pFramePointerList[device][level] = g_virtual_frame.data();
+            frame.pFramePointerListGarlic[device][level] = g_virtual_frame.data();
+            frame.frameSize[device][level] = width * height * 2;
+        }
+        const auto& format = configs[device]->format;
+        frame.meta.format[device][0] = std::to_underlying(format.formatLevel0);
+        frame.meta.format[device][1] = std::to_underlying(format.formatLevel1);
+        frame.meta.format[device][2] = std::to_underlying(format.formatLevel2);
+        frame.meta.format[device][3] = std::to_underlying(format.formatLevel3);
+        frame.status[device] = 1;
+        frame.meta.frame[device] = frame_number;
+        frame.meta.timestamp[device] = timestamp;
+        frame.meta.deviceTimestamp[device] = static_cast<u32>(timestamp);
+        frame.meta.exposureGain[device] = g_virtual_exposure_gain[device];
+    }
+    frame.meta.acceleration_y = 1.0f;
+    frame.meta.vcounter = frame_number;
+
+    constexpr size_t header_size = offsetof(OrbisCameraFrameData, framePosition);
+    const size_t size = std::min<size_t>(frame_data->sizeThis, sizeof(OrbisCameraFrameData));
+    if (size > header_size) {
+        std::memcpy(reinterpret_cast<u8*>(frame_data) + header_size,
+                    reinterpret_cast<const u8*>(&frame) + header_size, size - header_size);
+    }
+    return ORBIS_OK;
+}
 
 s32 PS4_SYSV_ABI sceCameraAccGetData() {
     LOG_ERROR(Lib_Camera, "(STUBBED) called");
@@ -85,6 +158,9 @@ s32 PS4_SYSV_ABI sceCameraGetFrameData(s32 handle, OrbisCameraFrameData* frame_d
         return ORBIS_CAMERA_ERROR_PARAM;
     }
     LOG_DEBUG(Lib_Camera, "called, read mode: {:#x}", frame_data->readMode);
+    if (g_library_opened && IsVirtualCamera()) {
+        return GetVirtualFrameData(frame_data);
+    }
     frame_data->status[0] = -1;
     frame_data->status[1] = -1;
     if (handle < 1 || frame_data->sizeThis > 584) {
@@ -196,7 +272,7 @@ s32 PS4_SYSV_ABI sceCameraIsAttached(s32 index) {
         return ORBIS_CAMERA_ERROR_PARAM;
     }
     // 0 = disconnected, 1 = connected
-    return EmulatorSettings.GetCameraId() == -1 ? 0 : 1;
+    return IsCameraConnected() ? 1 : 0;
 }
 
 s32 PS4_SYSV_ABI sceCameraIsConfigChangeDone() {
@@ -294,6 +370,13 @@ s32 PS4_SYSV_ABI sceCameraStart(s32 handle, OrbisCameraStartParameter* param) {
         return ORBIS_CAMERA_ERROR_FORMAT_UNKNOWN;
     }
 
+    if (IsVirtualCamera()) {
+        g_virtual_frame.assign(c_width * c_height * 2, 0);
+        g_virtual_started = true;
+        g_virtual_next_frame_time = 0;
+        return ORBIS_OK;
+    }
+
     if (param->formatLevel[0] > 1 || param->formatLevel[1] > 1) {
         LOG_ERROR(Lib_Camera, "Downscaled image retrieval isn't supported yet!");
     }
@@ -372,6 +455,7 @@ s32 PS4_SYSV_ABI sceCameraStop(s32 handle) {
     if (!g_library_opened) {
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
+    g_virtual_started = false;
 
     return ORBIS_OK;
 }

@@ -379,7 +379,7 @@ s32 PS4_SYSV_ABI sceCameraSetConfig(s32 handle, OrbisCameraConfig* config) {
         LOG_ERROR(Lib_Camera, "ORBIS_CAMERA_ERROR_NOT_OPEN");
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
-    if (EmulatorSettings.GetCameraId() == -1) {
+    if (EmulatorSettings.GetCameraId() == -1 && !IsVirtualCamera()) {
         LOG_ERROR(Lib_Camera, "ORBIS_CAMERA_ERROR_NOT_CONNECTED");
         return ORBIS_CAMERA_ERROR_NOT_CONNECTED;
     }
@@ -479,12 +479,14 @@ s32 PS4_SYSV_ABI sceCameraSetExposureGain(s32 handle, OrbisCameraChannel channel
                                           OrbisCameraExposureGain* exposure_gain, void* option) {
     LOG_DEBUG(Lib_Camera, "called");
     if (handle < 1 || channel > OrbisCameraChannel::ORBIS_CAMERA_CHANNEL_BOTH ||
-        channel < OrbisCameraChannel::ORBIS_CAMERA_CHANNEL_0 || exposure_gain != nullptr ||
-        option != nullptr) {
+        channel < OrbisCameraChannel::ORBIS_CAMERA_CHANNEL_0 || option != nullptr) {
         return ORBIS_CAMERA_ERROR_PARAM;
     }
     if (!g_library_opened) {
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
+    }
+    if (IsVirtualCamera()) {
+        return ORBIS_OK;
     }
     if (EmulatorSettings.GetCameraId() == -1) {
         return ORBIS_CAMERA_ERROR_NOT_CONNECTED;

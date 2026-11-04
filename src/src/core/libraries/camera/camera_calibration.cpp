@@ -58,6 +58,12 @@ s32 PS4_SYSV_ABI sceCameraGetCalibrationData(const OrbisCameraGetCalibrationData
                 ORBIS_CAMERA_CALIBRATION_DATA_FUNCTION_TYPE_IMAGE_INVERSE_RECTIFICATION) {
         return ORBIS_CAMERA_ERROR_PARAM;
     }
+    if (IsVirtualCamera()) {
+        std::memset(calibration_data, 0, sizeof(OrbisCameraCalibrationData));
+        calibration_data->format_type = param->format_type;
+        calibration_data->function_type = param->function_type;
+        return ORBIS_OK;
+    }
     if (EmulatorSettings.GetCameraId() == -1) {
         return ORBIS_CAMERA_ERROR_NOT_CONNECTED;
     }

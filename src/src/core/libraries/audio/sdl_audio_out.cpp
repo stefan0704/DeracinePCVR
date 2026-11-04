@@ -14,6 +14,9 @@
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
 #include "core/libraries/kernel/threads.h"
+#ifdef ENABLE_OPENXR_HOST
+#include "core/vr/openxr_host.h"
+#endif
 
 // SIMD support detection
 #if defined(__x86_64__) || defined(_M_X64)
@@ -388,6 +391,12 @@ private:
     }
 
     std::string GetDeviceName(OrbisAudioOutPort type) const {
+#ifdef ENABLE_OPENXR_HOST
+        if (const std::string headset = Core::Vr::OpenXrHost::Instance().AudioOutputName();
+            !headset.empty()) {
+            return headset;
+        }
+#endif
         switch (type) {
         case OrbisAudioOutPort::Main:
         case OrbisAudioOutPort::Bgm:
