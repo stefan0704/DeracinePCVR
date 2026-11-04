@@ -15,8 +15,13 @@ namespace VideoCore {
 Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
                  const AmdGpu::BorderColorBuffer border_color_base) {
     using namespace Vulkan;
+    static const float force_aniso = [] {
+        const char* value = std::getenv("SHADPS4_FORCE_ANISO");
+        return value != nullptr ? static_cast<float>(std::atof(value)) : 0.0f;
+    }();
     const bool anisotropy_enable = instance.IsAnisotropicFilteringSupported() &&
-                                   (AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
+                                   (force_aniso > 1.0f ||
+                                    AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
                                     AmdGpu::IsAnisoFilter(sampler.xy_min_filter));
     // SHADPS4_MAX_ANISO=<n>: no more than n samples along a texture seen at a slant, whatever
     // the title asks for (a measuring aid: what that filtering costs).
@@ -24,8 +29,9 @@ Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sample
         const char* value = std::getenv("SHADPS4_MAX_ANISO");
         return value != nullptr ? std::max(1.0f, static_cast<float>(std::atof(value))) : 16.0f;
     }();
+    const float requested_aniso = force_aniso > 1.0f ? force_aniso : sampler.MaxAniso();
     const float max_anisotropy =
-        anisotropy_enable ? std::clamp(sampler.MaxAniso(), 1.0f,
+        anisotropy_enable ? std::clamp(requested_aniso, 1.0f,
                                        std::min(instance.MaxSamplerAnisotropy(), aniso_cap))
                           : 1.0f;
     if (anisotropy_enable) {

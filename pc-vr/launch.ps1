@@ -856,7 +856,8 @@ if ($resolution -eq "game") {
         if (-not $dynamic) { $env:SHADPS4_TITLE_RESOLUTION = "6" }
     }
 }
-$env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.3"
+$env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.4"
+if ((Setting "aniso") -ne "") { $env:SHADPS4_FORCE_ANISO = Setting "aniso" }
 $env:SHADPS4_VR_DESKTOP_VIEW = Get-DesktopView
 $env:SHADPS4_VR_DESKTOP_CROP = $(if ((Setting "desktop_crop" "0") -eq "1") { "1" } else { "0" })
 if ((Setting "msaa") -ne "") { $env:SHADPS4_MAX_MSAA = Setting "msaa" }
@@ -908,7 +909,7 @@ if (Test-Path $cfgPath) {
             $cfgJson.GPU.readbacks_mode = $rbMode
             $changed = $true
         }
-        $copyGpuSetting = Setting "copy_gpu_buffers" "1"
+        $copyGpuSetting = Setting "copy_gpu_buffers" "0"
         if ($copyGpuSetting -ne "") {
             $copyVal = ($copyGpuSetting -eq "1" -or $copyGpuSetting -eq "true")
             if ($cfgJson.GPU.copy_gpu_buffers -ne $copyVal) {

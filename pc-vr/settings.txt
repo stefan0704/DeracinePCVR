@@ -18,7 +18,8 @@ fov=100
 menu=1
 
 # Sharpening (RCAS/CAS), 0 to 1.
-#sharpen=0.3
+sharpen=0.4
+aniso=16
 
 # Multi-Sample Anti-Aliasing (MSAA: 1, 2, 4, 8)
 #msaa=4
@@ -29,10 +30,10 @@ desktop_view=stereo
 desktop_crop=0
 
 # GPU Readbacks mode: "precise" (fixes missing face geometry/morph glitch), "relaxed", "disabled"
-readbacks=relaxed
+readbacks=precise
 readback_linear_images=1
-# copy_gpu_buffers=1 prevents command buffer race conditions and missing meshes.
-copy_gpu_buffers=1
+# copy_gpu_buffers=0 prevents command buffer race conditions and missing meshes.
+copy_gpu_buffers=0
 
 # Move controller 6DoF calibration (pitch in degrees, offsets in meters):
 # Defaults: move_pitch=-45, move_y=0.000, move_z=-0.135, move_x=0.0
