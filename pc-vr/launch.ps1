@@ -908,7 +908,7 @@ if (Test-Path $cfgPath) {
             $cfgJson.GPU.readbacks_mode = $rbMode
             $changed = $true
         }
-        $copyGpuSetting = Setting "copy_gpu_buffers" "0"
+        $copyGpuSetting = Setting "copy_gpu_buffers" "1"
         if ($copyGpuSetting -ne "") {
             $copyVal = ($copyGpuSetting -eq "1" -or $copyGpuSetting -eq "true")
             if ($cfgJson.GPU.copy_gpu_buffers -ne $copyVal) {

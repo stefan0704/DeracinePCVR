@@ -1078,28 +1078,51 @@ void Translator::V_RSQ_F32(const GcnInst& inst) {
 
 void Translator::V_RCP_CLAMP_F32(const GcnInst& inst) {
     const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
-    const IR::F32 result{ir.FPRecip(src0)};
+    const IR::F32 zero{ir.Imm32(0.0f)};
+    const IR::U1 is_zero{ir.FPEqual(src0, zero)};
+    const IR::U1 is_nan{ir.FPIsNan(src0)};
     const IR::F32 max_val{ir.Imm32(std::numeric_limits<float>::max())};
     const IR::F32 min_val{ir.Imm32(-std::numeric_limits<float>::max())};
-    SetDst(inst.dst[0], ir.FPClamp(result, min_val, max_val));
+
+    const IR::F32 safe_src0{ir.Select(is_zero, ir.Imm32(1.0f), src0)};
+    const IR::F32 result{ir.FPRecip(safe_src0)};
+    const IR::F32 clamped{ir.FPClamp(result, min_val, max_val)};
+
+    const IR::F32 output{ir.Select(is_nan, zero, ir.Select(is_zero, max_val, clamped))};
+    SetDst(inst.dst[0], output);
 }
 
 void Translator::V_RSQ_CLAMP_F32(const GcnInst& inst) {
     const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
-    const IR::F32 result{ir.FPRecipSqrt(src0)};
+    const IR::F32 zero{ir.Imm32(0.0f)};
+    const IR::U1 non_positive{ir.FPLessThanEqual(src0, zero)};
+    const IR::U1 is_nan{ir.FPIsNan(src0)};
+    const IR::U1 invalid{ir.LogicalOr(non_positive, is_nan)};
+
     const IR::F32 max_val{ir.Imm32(std::numeric_limits<float>::max())};
-    const IR::F32 min_val{ir.Imm32(-std::numeric_limits<float>::max())};
-    SetDst(inst.dst[0], ir.FPClamp(result, min_val, max_val));
+    const IR::F32 safe_src0{ir.FPMax(src0, ir.Imm32(std::numeric_limits<float>::min()))};
+    const IR::F32 result{ir.FPRecipSqrt(safe_src0)};
+    const IR::F32 clamped{ir.FPMin(result, max_val)};
+
+    const IR::U1 is_zero{ir.FPEqual(src0, zero)};
+    const IR::F32 special{ir.Select(is_zero, max_val, zero)};
+    const IR::F32 output{ir.Select(invalid, special, clamped)};
+    SetDst(inst.dst[0], output);
 }
 
 void Translator::V_RSQ_LEGACY_F32(const GcnInst& inst) {
     const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
-    const IR::F32 result{ir.FPRecipSqrt(src0)};
-    const IR::F32 max_val{ir.Imm32(std::numeric_limits<float>::max())};
-    const IR::F32 min_val{ir.Imm32(-std::numeric_limits<float>::max())};
-    const IR::F32 clamped{ir.FPClamp(result, min_val, max_val)};
     const IR::F32 zero{ir.Imm32(0.0f)};
-    const IR::F32 output{ir.Select(ir.FPEqual(src0, zero), zero, clamped)};
+    const IR::U1 non_positive{ir.FPLessThanEqual(src0, zero)};
+    const IR::U1 is_nan{ir.FPIsNan(src0)};
+    const IR::U1 invalid{ir.LogicalOr(non_positive, is_nan)};
+
+    const IR::F32 safe_src0{ir.FPMax(src0, ir.Imm32(std::numeric_limits<float>::min()))};
+    const IR::F32 result{ir.FPRecipSqrt(safe_src0)};
+    const IR::F32 max_val{ir.Imm32(std::numeric_limits<float>::max())};
+    const IR::F32 clamped{ir.FPMin(result, max_val)};
+
+    const IR::F32 output{ir.Select(invalid, zero, clamped)};
     SetDst(inst.dst[0], output);
 }
 

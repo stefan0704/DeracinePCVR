@@ -29,10 +29,10 @@ desktop_view=stereo
 desktop_crop=0
 
 # GPU Readbacks mode: "precise" (fixes missing face geometry/morph glitch), "relaxed", "disabled"
-readbacks=precise
+readbacks=relaxed
 readback_linear_images=1
-# copy_gpu_buffers=1 saturates PCIe bus and degrades VR framerate. Leave disabled (0) for optimal performance.
-copy_gpu_buffers=0
+# copy_gpu_buffers=1 prevents command buffer race conditions and missing meshes.
+copy_gpu_buffers=1
 
 # Move controller 6DoF calibration (pitch in degrees, offsets in meters):
 # Defaults: move_pitch=-45, move_y=0.000, move_z=-0.135, move_x=0.0
