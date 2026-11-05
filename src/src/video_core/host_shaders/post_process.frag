@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #version 450
@@ -24,6 +24,7 @@ layout (push_constant) uniform settings {
     // picture is sharpened by sharpen_centre instead: where FSR 1 enlarged the title's scene.
     float sharpen_centre;
     float centre_radius;
+    bool antialias;
 } pp;
 
 const float cutoff = 0.0031308, a = 1.055, b = 0.055, d = 12.92;
@@ -41,8 +42,85 @@ vec3 shown(vec2 at) {
     return pp.hdr || pp.encoded_in ? rgb : gamma(rgb);
 }
 
+float Brightness(vec3 rgb) {
+    const float light = min(dot(max(rgb, vec3(0.0)), vec3(0.299, 0.587, 0.114)), 65000.0);
+    return sqrt(light / (1.0 + light));
+}
+
+vec4 SampleFXAA(vec2 at) {
+    const vec2 texel = 1.0 / vec2(textureSize(texSampler, 0));
+    const vec4 centre = textureLod(texSampler, at, 0.0);
+    const float m = Brightness(centre.rgb);
+    const float n = Brightness(textureLodOffset(texSampler, at, 0.0, ivec2(0, -1)).rgb);
+    const float s = Brightness(textureLodOffset(texSampler, at, 0.0, ivec2(0, 1)).rgb);
+    const float w = Brightness(textureLodOffset(texSampler, at, 0.0, ivec2(-1, 0)).rgb);
+    const float e = Brightness(textureLodOffset(texSampler, at, 0.0, ivec2(1, 0)).rgb);
+    const float brightest = max(max(max(n, s), max(w, e)), m);
+    const float darkest = min(min(min(n, s), min(w, e)), m);
+    const float contrast = brightest - darkest;
+    if (contrast < max(0.0625, brightest * 0.166)) {
+        return centre;
+    }
+    const float nw = Brightness(textureLodOffset(texSampler, at, 0.0, ivec2(-1, -1)).rgb);
+    const float ne = Brightness(textureLodOffset(texSampler, at, 0.0, ivec2(1, -1)).rgb);
+    const float sw = Brightness(textureLodOffset(texSampler, at, 0.0, ivec2(-1, 1)).rgb);
+    const float se = Brightness(textureLodOffset(texSampler, at, 0.0, ivec2(1, 1)).rgb);
+
+    const float across_rows = abs(nw + sw - 2.0 * w) + 2.0 * abs(n + s - 2.0 * m) + abs(ne + se - 2.0 * e);
+    const float across_columns = abs(nw + ne - 2.0 * n) + 2.0 * abs(w + e - 2.0 * m) + abs(sw + se - 2.0 * s);
+    const bool along_rows = across_rows >= across_columns;
+
+    const float before = along_rows ? n : w;
+    const float after = along_rows ? s : e;
+    const float rise_before = abs(before - m);
+    const float rise_after = abs(after - m);
+    const bool steeper_before = rise_before >= rise_after;
+    const float rise = max(rise_before, rise_after) * 0.25;
+    const float side = steeper_before ? -1.0 : 1.0;
+    const float middle = 0.5 * ((steeper_before ? before : after) + m);
+    const bool centre_below = m < middle;
+
+    const vec2 across = along_rows ? vec2(0.0, texel.y) : vec2(texel.x, 0.0);
+    const vec2 along = along_rows ? vec2(texel.x, 0.0) : vec2(0.0, texel.y);
+    const vec2 start = at + across * (side * 0.5);
+    float back = 0.0;
+    float forth = 0.0;
+    float end_back = 0.0;
+    float end_forth = 0.0;
+    bool done_back = false;
+    bool done_forth = false;
+    const float StepLength[7] = float[7](1.0, 1.5, 2.0, 2.0, 2.0, 4.0, 8.0);
+    for (int i = 0; i < 7; ++i) {
+        if (!done_back) {
+            back += StepLength[i];
+            end_back = Brightness(textureLod(texSampler, start - along * back, 0.0).rgb) - middle;
+            done_back = abs(end_back) >= rise;
+        }
+        if (!done_forth) {
+            forth += StepLength[i];
+            end_forth = Brightness(textureLod(texSampler, start + along * forth, 0.0).rgb) - middle;
+            done_forth = abs(end_forth) >= rise;
+        }
+        if (done_back && done_forth) break;
+    }
+    const bool nearer_back = back < forth;
+    const float nearer = min(back, forth);
+    const bool sticks_out = ((nearer_back ? end_back : end_forth) < 0.0) != centre_below;
+    const float by_edge = sticks_out ? 0.5 - nearer / (back + forth) : 0.0;
+
+    const float around = (2.0 * (n + s + w + e) + nw + ne + sw + se) / 12.0;
+    float speck = clamp(abs(around - m) / contrast, 0.0, 1.0);
+    speck = speck * speck * (3.0 - 2.0 * speck);
+    const float share = max(by_edge, speck * speck * 0.5);
+
+    const vec4 other = textureLod(texSampler, at + across * side, 0.0);
+    const float weight_centre = 1.0 - share;
+    const float weight_other = share;
+    return centre * weight_centre + other * weight_other;
+}
+
 void main() {
-    vec4 color_linear = texture(texSampler, uv);
+    vec4 color_linear = pp.antialias ? SampleFXAA(uv) : texture(texSampler, uv);
     vec3 here = pp.hdr || pp.encoded_in ? color_linear.rgb : gamma(color_linear.rgb);
     vec2 from_middle = uv * 2.0 - 1.0;
     float sharpen = dot(from_middle, from_middle) < pp.centre_radius * pp.centre_radius

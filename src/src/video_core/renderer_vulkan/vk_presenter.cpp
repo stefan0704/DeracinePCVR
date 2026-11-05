@@ -1444,9 +1444,14 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         return value != nullptr ? std::clamp(static_cast<float>(std::atof(value)), 0.0f, 1.0f)
                                 : 0.0f;
     }();
+    static const bool antialias = [] {
+        const char* value = std::getenv("SHADPS4_RESOLVE_AA");
+        return value == nullptr || value[0] != '0';
+    }();
     auto hmd_settings = pp_settings;
     hmd_settings.sharpen = sharpen;
     hmd_settings.encoded_in = encoded_in ? 1 : 0;
+    hmd_settings.antialias = antialias ? 1 : 0;
     // Where FSR 1 enlarged the title's scene (TitleUpscale), the picture is crisp already:
     // sharpened by SHADPS4_VR_SHARPEN_FSR there (half of the rest by default).
     if (rasterizer->EyesUpscaled()) {

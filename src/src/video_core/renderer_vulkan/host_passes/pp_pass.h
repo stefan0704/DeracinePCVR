@@ -34,6 +34,7 @@ public:
         /// scene, which leaves it crisp already (TitleUpscale). 0: no such part.
         float sharpen_centre = 0.0f;
         float centre_radius = 0.0f;
+        u32 antialias = 1;
     };
 
     void Create(const Instance& instance, MasterSemaphore* master_semaphore,
