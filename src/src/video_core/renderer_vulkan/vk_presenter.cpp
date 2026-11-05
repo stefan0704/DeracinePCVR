@@ -1233,7 +1233,47 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     const bool crop = spectator && desktop_crop;
     const float desktop_aspect = Core::Vr::DesktopViewAspect(
         desktop_view, fov, static_cast<float>(eye_width) / eye_height);
-    Frame* const local = exported ? nullptr : vr_exporter->AcquireLocal(eye_width * 2, eye_height);
+    // Compute target resolution for OpenXR swapchain.
+    // When SHADPS4_TITLE_EYE_WIDTH (from settings.txt resolution) or SHADPS4_VR_SCALE is set,
+    // upscale the OpenXR swapchain so modern VR headsets (Quest 2/3, etc.) receive a supersampled
+    // frame with SSAA rather than stretching the low-res 1248x1404 guest render target.
+    static const u32 configured_eye_width = [] {
+        const char* val = std::getenv("SHADPS4_TITLE_EYE_WIDTH");
+        return val != nullptr ? static_cast<u32>(std::max(0, std::atoi(val))) : 0u;
+    }();
+    static const float configured_scale = [] {
+        const char* val = std::getenv("SHADPS4_VR_SCALE");
+        return val != nullptr ? std::max(0.5f, static_cast<float>(std::atof(val))) : 0.0f;
+    }();
+
+    u32 target_eye_width = eye_width;
+    u32 target_eye_height = eye_height;
+    if (configured_scale > 0.0f) {
+        target_eye_width = static_cast<u32>(std::round(eye_width * configured_scale));
+        target_eye_height = static_cast<u32>(std::round(eye_height * configured_scale));
+    } else if (configured_eye_width > eye_width) {
+        target_eye_width = configured_eye_width;
+        const float scale = static_cast<float>(target_eye_width) / static_cast<float>(eye_width);
+        target_eye_height = static_cast<u32>(std::round(eye_height * scale));
+    }
+    // Align dimensions to 16 for optimal Vulkan memory and OpenXR encoder performance
+    target_eye_width = (target_eye_width + 15u) & ~15u;
+    target_eye_height = (target_eye_height + 15u) & ~15u;
+
+    const u32 target_swapchain_width = target_eye_width * 2;
+    const u32 target_swapchain_height = target_eye_height;
+
+    static bool logged_target_res = false;
+    if (!logged_target_res) {
+        logged_target_res = true;
+        LOG_INFO(Render_Vulkan,
+                 "VR HMD OpenXR swapchain target: {}x{} [per eye: {}x{}, base eye: {}x{}, scale: {:.2f}x]",
+                 target_swapchain_width, target_swapchain_height,
+                 target_eye_width, target_eye_height, eye_width, eye_height,
+                 static_cast<float>(target_eye_width) / static_cast<float>(eye_width));
+    }
+
+    Frame* const local = exported ? nullptr : vr_exporter->AcquireLocal(target_swapchain_width, target_swapchain_height);
     if (!exported) {
         expected_ratio = crop ? std::nullopt : std::optional{desktop_aspect};
         frame = GetRenderFrame();
@@ -1290,13 +1330,12 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         }
     };
     const auto pixel_for_pixel = [&](const Frame* target) {
-        return target == nullptr ||
+        return target == nullptr || target == local ||
                (target->width == eye_width * 2 && target->height == eye_height);
     };
     const auto& right_info = texture_cache.GetImage(image_ids[1]).info;
     const u32 src_image_width = is_sbs ? (eye_width * 2) : eye_width;
-    bool encoded_in = pp_settings.gamma == 1.0f && pp_settings.hdr == 0 && !spectator &&
-                      pixel_for_pixel(frame) && pixel_for_pixel(local) &&
+    bool encoded_in = pp_settings.gamma == 1.0f && pp_settings.hdr == 0 &&
                       right_info.size.width == src_image_width && right_info.size.height == eye_height &&
                       !FrameStats::AbOff("ppcopy");
     for (u32 eye = 0; eye < 2 && encoded_in; ++eye) {
