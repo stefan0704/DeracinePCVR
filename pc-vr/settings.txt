@@ -8,7 +8,9 @@
 # Target FPS: 120, 90, 80, 72, 60, 45, 30.
 # 60 is the PS4 console's native VR rate. Set your headset refresh rate to 120 Hz
 # for a smooth 60 or 120 fps presentation.
-fps=120
+fps=90
+resolution=2160
+dynamic=0
 
 # How much of the headset's field of view the game draws, in percent, 70 to 100.
 fov=100
@@ -22,15 +24,15 @@ sharpen=0.4
 aniso=16
 
 # Multi-Sample Anti-Aliasing (MSAA: 1, 2, 4, 8)
-#msaa=4
-#antialias=1
+msaa=4
+antialias=1
 
 # Desktop mirror view mode: "stereo" (both eyes side-by-side), "spectator" (single eye), "combined"
 desktop_view=stereo
 desktop_crop=0
 
 # GPU Readbacks mode: "precise" (fixes missing face geometry/morph glitch), "relaxed", "disabled"
-readbacks=precise
+readbacks=relaxed
 readback_linear_images=1
 # copy_gpu_buffers=0 prevents command buffer race conditions and missing meshes.
 copy_gpu_buffers=0

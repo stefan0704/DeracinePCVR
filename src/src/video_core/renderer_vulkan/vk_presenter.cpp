@@ -1507,6 +1507,7 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
     if (local != nullptr) {
         // An image that encodes for display itself.
         auto local_settings = hmd_settings;
+        local_settings.encoded_in = 1;
         local_settings.linear_out = 1;
         hmd_pp_pass.Render(cmdbuf, regions_for(*local), *local, local_settings);
         if (has_overlay) {
