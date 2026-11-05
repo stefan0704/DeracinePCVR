@@ -51,7 +51,9 @@ void main() {
     if (sharpen > 0.0) {
         // Contrast adaptive sharpening: a pixel is pushed away from the four next to it, the
         // more the less they differ already, and never beyond black or white.
-        vec2 texel = 1.0 / vec2(textureSize(texSampler, 0));
+        // Sample at output pixel pitch (from screen derivatives) to prevent low-res staircase amplification.
+        vec2 out_texel = vec2(abs(dFdx(uv).x), abs(dFdy(uv).y));
+        vec2 texel = out_texel.x > 0.0 ? out_texel : 1.0 / vec2(textureSize(texSampler, 0));
         vec3 above = shown(uv - vec2(0.0, texel.y));
         vec3 below = shown(uv + vec2(0.0, texel.y));
         vec3 left = shown(uv - vec2(texel.x, 0.0));
