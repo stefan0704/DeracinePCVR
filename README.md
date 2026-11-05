@@ -2,12 +2,22 @@
 
 **Déraciné (PlayStation 4 / PlayStation VR)** adapted for PC VR via OpenXR, running on a specialized fork of the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator.
 
+![Déraciné PCVR Gameplay](docs/screenshots/deracine_vr_gameplay.jpg)
+
 Play FromSoftware's PSVR adventure with any modern PC VR headset:
 - **Meta Quest 3 / Quest 2 / Quest Pro** (via Virtual Desktop VDXR or Meta Quest Link / AirLink)
 - **Valve Index / HTC Vive** (via SteamVR OpenXR runtime)
 - **Bigscreen Beyond, Pimax**, or any standard PC VR headset with an active OpenXR runtime.
 
 > **NO GAME FILES ARE INCLUDED OR DISTRIBUTED.** You must provide your own legally dumped copy of *Déraciné* (CUSA11919, CUSA10860, CUSA09051, or CUSA11833) from your own PlayStation 4.
+
+---
+
+## Screenshots
+
+| In-Game VR Gameplay | Quest 3 + Virtual Desktop (90 FPS / Ultra) |
+| :---: | :---: |
+| ![Gameplay](docs/screenshots/deracine_vr_gameplay.jpg) | ![Performance](docs/screenshots/deracine_vr_performance.jpg) |
 
 ---
 
