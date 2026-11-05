@@ -19,6 +19,7 @@ bin/
 *.obj
 *.exe.stackdump
 _vr_backup/
+*.zip
 
 # Ignore third-party submodule source trees (fetched via git submodules or CMake)
 src/externals/*
