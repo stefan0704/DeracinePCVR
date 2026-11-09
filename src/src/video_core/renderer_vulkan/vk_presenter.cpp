@@ -1621,7 +1621,10 @@ void Presenter::DumpGpuImages(std::string_view folder) {
                  vk::to_string(info.pixel_format), info.num_samples, info.resources.levels,
                  info.resources.layers, static_cast<u32>(image.flags),
                  info.props.is_depth ? ", depth" : "");
-        if (!(image.flags & VideoCore::ImageFlagBits::GpuModified) || info.props.is_depth ||
+        if (!(image.flags & VideoCore::ImageFlagBits::GpuModified) ||
+            !(image.flags & VideoCore::ImageFlagBits::Registered) || !image.backing ||
+            info.props.is_depth || info.props.is_block ||
+            info.pixel_format == vk::Format::eUndefined ||
             info.props.is_volume || info.size.width < 64 || info.size.height < 64) {
             return;
         }
@@ -1631,6 +1634,10 @@ void Presenter::DumpGpuImages(std::string_view folder) {
     const vk::Device device = instance.GetDevice();
     u32 index = 0;
     for (VideoCore::Image* image : images) {
+        if (!(image->flags & VideoCore::ImageFlagBits::Registered) || !image->backing ||
+            !image->GetImage()) {
+            continue;
+        }
         const auto& info = image->info;
         const u32 width = std::min(info.size.width, ThumbWidth);
         const u32 height = std::max(1u, info.size.height * width / info.size.width);
