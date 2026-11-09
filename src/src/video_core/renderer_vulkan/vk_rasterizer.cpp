@@ -1121,14 +1121,20 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
 
 void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data) {
+    constexpr VideoCore::BufferId kStreamFastPathId{0xFFFFFFFEu};
     buffer_bindings.clear();
 
     for (const auto& desc : stage.buffers) {
         const auto vsharp = desc.GetSharp(stage);
         if (!desc.IsSpecial() && vsharp.base_address != 0 && vsharp.GetSize() > 0) {
             const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
-            const auto buffer_id = buffer_cache.FindBuffer(vsharp.base_address, size);
-            buffer_bindings.emplace_back(buffer_id, vsharp, size);
+            if (!desc.is_written && size <= VideoCore::BufferCache::CACHING_PAGESIZE &&
+                !buffer_cache.IsRegionGpuModified(vsharp.base_address, size)) {
+                buffer_bindings.emplace_back(kStreamFastPathId, vsharp, size);
+            } else {
+                const auto buffer_id = buffer_cache.FindBuffer(vsharp.base_address, size);
+                buffer_bindings.emplace_back(buffer_id, vsharp, size);
+            }
         } else {
             buffer_bindings.emplace_back(VideoCore::BufferId{}, vsharp, 0);
         }
@@ -1189,37 +1195,44 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
         } else {
             // (A uniform buffer starts where the GPU allows one to: the shaders add no offset
             // to what they read of it.)
+            const auto lookup_id =
+                (buffer_id == kStreamFastPathId) ? VideoCore::BufferId{} : buffer_id;
             const auto [vk_buffer, offset] =
                 is_storage ? buffer_cache.ObtainBuffer(vsharp.base_address, size, desc.is_written,
-                                                       desc.is_formatted, buffer_id)
-                           : buffer_cache.ObtainUniformBuffer(vsharp.base_address, size, buffer_id);
+                                                       desc.is_formatted, lookup_id)
+                           : buffer_cache.ObtainUniformBuffer(vsharp.base_address, size, lookup_id);
             const u32 offset_aligned = Common::AlignDown(offset, alignment);
             const u32 adjust = offset - offset_aligned;
             ASSERT(adjust % 4 == 0);
             push_data.AddOffset(binding.buffer, adjust);
             buffer_infos.emplace_back(vk_buffer->Handle(), offset_aligned, size + adjust);
-            bool first_for_buffer = true;
-            for (u32 j = 0; j < i; ++j) {
-                if (std::get<0>(buffer_bindings[j]) == buffer_id) {
-                    first_for_buffer = false;
-                    break;
-                }
-            }
-            if (first_for_buffer) {
-                bool any_written = desc.is_written;
-                for (u32 j = i + 1; j < buffer_bindings.size(); ++j) {
-                    if (std::get<0>(buffer_bindings[j]) == buffer_id &&
-                        stage.buffers[j].is_written) {
-                        any_written = true;
+            if (buffer_id != kStreamFastPathId) {
+                bool first_for_buffer = true;
+                for (u32 j = 0; j < i; ++j) {
+                    if (std::get<0>(buffer_bindings[j]) == buffer_id) {
+                        first_for_buffer = false;
                         break;
                     }
                 }
-                if (auto barrier = vk_buffer->GetBarrier(
-                        any_written ? (vk::AccessFlagBits2::eShaderRead |
-                                       vk::AccessFlagBits2::eShaderWrite)
-                                    : vk::AccessFlagBits2::eShaderRead,
-                        vk::PipelineStageFlagBits2::eAllCommands)) {
-                    buffer_barriers.emplace_back(*barrier);
+                if (first_for_buffer) {
+                    bool any_written = desc.is_written;
+                    for (u32 j = i + 1; j < buffer_bindings.size(); ++j) {
+                        if (std::get<0>(buffer_bindings[j]) == buffer_id &&
+                            stage.buffers[j].is_written) {
+                            any_written = true;
+                            break;
+                        }
+                    }
+                    const auto dst_stage = (stage.stage == Shader::Stage::Compute)
+                                               ? vk::PipelineStageFlagBits2::eComputeShader
+                                               : vk::PipelineStageFlagBits2::eAllCommands;
+                    if (auto barrier = vk_buffer->GetBarrier(
+                            any_written ? (vk::AccessFlagBits2::eShaderRead |
+                                           vk::AccessFlagBits2::eShaderWrite)
+                                        : vk::AccessFlagBits2::eShaderRead,
+                            dst_stage)) {
+                        buffer_barriers.emplace_back(*barrier);
+                    }
                 }
             }
             if (desc.is_written && desc.is_formatted) {
