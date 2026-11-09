@@ -11,7 +11,7 @@
     "sdl_padSpk_output_device": "Default Device"
   },
   "Debug": {
-    "config_version": "26e4a83fd4b8a53591b8b150285056e2a7cfb0b7",
+    "config_version": "f6e23524b2e5813ed6fc6e5fdfb276c9e22a6794",
     "debug_dump": false,
     "shader_collect": false
   },
@@ -87,7 +87,7 @@
   "Log": {
     "append": false,
     "enable": true,
-    "filter": "*:Warning Core_Vr:Info",
+    "filter": "*:Warning Core.Vr:Info",
     "flush_level": "",
     "max_skip_duration": 5000,
     "separate": false,
@@ -109,7 +109,7 @@
   "Vulkan": {
     "gpu_id": -1,
     "pipeline_cache_archived": false,
-    "pipeline_cache_enabled": true,
+    "pipeline_cache_enabled": false,
     "renderdoc_enabled": false,
     "vkcrash_diagnostic_enabled": false,
     "vkguest_markers": false,
