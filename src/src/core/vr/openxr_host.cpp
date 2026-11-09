@@ -23,7 +23,10 @@
 
 #include <SDL3/SDL_events.h>
 
+#include <filesystem>
+#include <fstream>
 #include "common/logging/log.h"
+#include "common/path_util.h"
 #include "common/polyfill_thread.h"
 #include "common/singleton.h"
 #include "common/thread.h"
@@ -50,6 +53,14 @@ namespace Core::Vr {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+std::atomic<bool>& SwapHandsActive() {
+    static std::atomic<bool> active = [] {
+        const char* val = std::getenv("SHADPS4_SWAP_HANDS");
+        return val != nullptr && (std::string_view(val) == "1" || std::string_view(val) == "true");
+    }();
+    return active;
+}
 
 /// Images the title's frames are drawn into on their way to the headset: one being drawn, one
 /// waiting to be shown, one being copied, and one to spare.
@@ -1215,6 +1226,49 @@ struct OpenXrHost::Impl {
             finger.x = test_flick;
         }
         if (!any_active) {
+            for (int hand = 0; hand < 2; ++hand) {
+                if (grip_spaces[hand] == XR_NULL_HANDLE) {
+                    continue;
+                }
+                XrSpaceVelocity hand_velocity{XR_TYPE_SPACE_VELOCITY};
+                XrSpaceLocation hand_location{XR_TYPE_SPACE_LOCATION};
+                hand_location.next = &hand_velocity;
+                const bool hand_located =
+                    XR_SUCCEEDED(xrLocateSpace(grip_spaces[hand], local_space, time, &hand_location)) &&
+                    (hand_location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0 &&
+                    (hand_location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+                DeviceState hand_state{};
+                if (hand_located) {
+                    hand_state.pose.position = {hand_location.pose.position.x,
+                                                hand_location.pose.position.y,
+                                                hand_location.pose.position.z};
+                    hand_state.pose.orientation = Normalize(
+                        {hand_location.pose.orientation.x, hand_location.pose.orientation.y,
+                         hand_location.pose.orientation.z, hand_location.pose.orientation.w});
+                    static const float pitch_deg = EnvFloat("SHADPS4_MOVE_PITCH", -45.0f);
+                    static const float offset_x = EnvFloat("SHADPS4_MOVE_X", 0.0f);
+                    static const float offset_y = EnvFloat("SHADPS4_MOVE_Y", 0.000f);
+                    static const float offset_z = EnvFloat("SHADPS4_MOVE_Z", -0.135f);
+                    const float pitch_rad = pitch_deg * (3.14159265358979323846f / 180.0f);
+                    const Quat rot_pitch{std::sin(pitch_rad * 0.5f), 0.0f, 0.0f,
+                                         std::cos(pitch_rad * 0.5f)};
+                    hand_state.pose.orientation =
+                        Normalize(Multiply(hand_state.pose.orientation, rot_pitch));
+                    const Vec3 local_offset{offset_x, offset_y, offset_z};
+                    const Vec3 world_offset = Rotate(hand_state.pose.orientation, local_offset);
+                    hand_state.pose.position.x += world_offset.x;
+                    hand_state.pose.position.y += world_offset.y;
+                    hand_state.pose.position.z += world_offset.z;
+                    hand_state.tracked = true;
+                } else {
+                    hand_state.pose.position = {hand == 0 ? -0.25f : 0.25f, -0.30f, -0.35f};
+                    hand_state.pose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+                    hand_state.tracked = true;
+                }
+                const int target_move_slot =
+                    !SwapHandsActive().load(std::memory_order_relaxed) ? (hand == 0 ? 1 : 0) : hand;
+                Runtime::Instance().UpdateHand(target_move_slot, hand_state);
+            }
             // Both lie somewhere, asleep.
             controllers_in_use = 0;
             ReleaseControllers("they are not in the player's hands");
@@ -1272,6 +1326,66 @@ struct OpenXrHost::Impl {
             Runtime::Instance().RequestRecenter();
         }
         view_reset_held = view_reset;
+        // Live shortcuts while playing in the HMD:
+        // 1) Hold Left Stick click (L3 alone) for 0.7s -> swap Left/Right VR hands on the fly.
+        // 2) Hold Right Stick click (R3 alone) for 0.7s -> dump GPU render targets & draw trace to user/rt_dump.
+        {
+            static double l3_hold_start = 0.0;
+            static bool l3_triggered = false;
+            if (left_stick_in && !right_stick_in) {
+                if (l3_hold_start == 0.0) {
+                    l3_hold_start = seconds;
+                } else if (!l3_triggered && (seconds - l3_hold_start) >= 0.7) {
+                    l3_triggered = true;
+                    const bool next_swap = !SwapHandsActive().load(std::memory_order_relaxed);
+                    SwapHandsActive().store(next_swap, std::memory_order_relaxed);
+                    LOG_INFO(Core_Vr, "Swapped Left/Right VR hands in real-time (swap_hands={})",
+                             next_swap ? 1 : 0);
+                    XrHapticActionInfo hinfo{XR_TYPE_HAPTIC_ACTION_INFO};
+                    hinfo.action = act_rumble;
+                    hinfo.subactionPath = hand_paths[0];
+                    XrHapticVibration vib{XR_TYPE_HAPTIC_VIBRATION};
+                    vib.duration = 200'000'000;
+                    vib.frequency = XR_FREQUENCY_UNSPECIFIED;
+                    vib.amplitude = 0.85f;
+                    xrApplyHapticFeedback(session, &hinfo,
+                                          reinterpret_cast<const XrHapticBaseHeader*>(&vib));
+                }
+            } else {
+                l3_hold_start = 0.0;
+                l3_triggered = false;
+            }
+
+            static double r3_hold_start = 0.0;
+            static bool r3_triggered = false;
+            if (right_stick_in && !left_stick_in) {
+                if (r3_hold_start == 0.0) {
+                    r3_hold_start = seconds;
+                } else if (!r3_triggered && (seconds - r3_hold_start) >= 0.7) {
+                    r3_triggered = true;
+                    const auto dump_flag =
+                        Common::FS::GetUserPath(Common::FS::PathType::UserDir) /
+                        "dump_render_targets";
+                    std::ofstream flag_out{dump_flag};
+                    flag_out << "1\n";
+                    LOG_INFO(Core_Vr,
+                             "Triggered in-HMD GPU render target & draw trace dump ({})",
+                             dump_flag.string());
+                    XrHapticActionInfo hinfo{XR_TYPE_HAPTIC_ACTION_INFO};
+                    hinfo.action = act_rumble;
+                    hinfo.subactionPath = hand_paths[1];
+                    XrHapticVibration vib{XR_TYPE_HAPTIC_VIBRATION};
+                    vib.duration = 200'000'000;
+                    vib.frequency = XR_FREQUENCY_UNSPECIFIED;
+                    vib.amplitude = 0.85f;
+                    xrApplyHapticFeedback(session, &hinfo,
+                                          reinterpret_cast<const XrHapticBaseHeader*>(&vib));
+                }
+            } else {
+                r3_hold_start = 0.0;
+                r3_triggered = false;
+            }
+        }
         add(left_stick_in && !view_reset, Buttons::L3);
         add(right_stick_in && !view_reset, Buttons::TouchPad);
 
@@ -1442,7 +1556,7 @@ struct OpenXrHost::Impl {
                 }
                 hand_state.tracked = true;
             }
-            static const bool swap_hands_env = [] {
+            [[maybe_unused]] static const bool swap_hands_env = [] {
                 const char* val = std::getenv("SHADPS4_SWAP_HANDS");
                 return val != nullptr && (std::string_view(val) == "1" || std::string_view(val) == "true");
             }();
@@ -1450,7 +1564,13 @@ struct OpenXrHost::Impl {
             // Move 0 is the primary hand (Right Hand, Red LED: Teleport, Interact).
             // Move 1 is the secondary hand (Left Hand, Blue LED: Watch, Inventory).
             // By default: Right Quest (hand 1) -> Move 0; Left Quest (hand 0) -> Move 1.
-            const int target_move_slot = !swap_hands_env ? (hand == 0 ? 1 : 0) : hand;
+            if (!hand_state.tracked) {
+                hand_state.pose.position = {hand == 0 ? -0.25f : 0.25f, -0.30f, -0.35f};
+                hand_state.pose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+                hand_state.tracked = true;
+            }
+            const int target_move_slot =
+                !SwapHandsActive().load(std::memory_order_relaxed) ? (hand == 0 ? 1 : 0) : hand;
             Runtime::Instance().UpdateHand(target_move_slot, hand_state);
         }
 
@@ -1476,11 +1596,11 @@ struct OpenXrHost::Impl {
         if (finger.x < -0.5f) right_move_buttons |= (1 << 6); // Cross (Right stick left -> Turn left)
         if (finger.x > 0.5f) right_move_buttons |= (1 << 5); // Circle (Right stick right -> Turn right)
 
-        static const bool swap_hands_env = [] {
+        [[maybe_unused]] static const bool swap_hands_env = [] {
             const char* val = std::getenv("SHADPS4_SWAP_HANDS");
             return val != nullptr && (std::string_view(val) == "1" || std::string_view(val) == "true");
         }();
-        if (!swap_hands_env) {
+        if (!SwapHandsActive().load(std::memory_order_relaxed)) {
             // Move 0 = Right Quest controller; Move 1 = Left Quest controller
             Runtime::Instance().UpdateHandInput(0, right_move_buttons, right_move_trigger);
             Runtime::Instance().UpdateHandInput(1, left_move_buttons, left_move_trigger);
@@ -1513,13 +1633,13 @@ struct OpenXrHost::Impl {
         rumble_time = now;
         const float heavy = static_cast<float>(wanted & 0xff) / 255.0f;
         const float light = static_cast<float>((wanted >> 8) & 0xff) / 255.0f;
-        static const bool swap_hands_env = [] {
+        [[maybe_unused]] static const bool swap_hands_env = [] {
             const char* val = std::getenv("SHADPS4_SWAP_HANDS");
             return val != nullptr && (std::string_view(val) == "1" || std::string_view(val) == "true");
         }();
         for (int hand = 0; hand < 2; ++hand) {
             const u8 hand_move_rumble =
-                !swap_hands_env ? (hand == 0 ? hand_rumble_left : hand_rumble_right)
+                !SwapHandsActive().load(std::memory_order_relaxed) ? (hand == 0 ? hand_rumble_left : hand_rumble_right)
                                 : (hand == 0 ? hand_rumble_right : hand_rumble_left);
             const float move_vib = static_cast<float>(hand_move_rumble) / 255.0f;
             const float pad_vib =

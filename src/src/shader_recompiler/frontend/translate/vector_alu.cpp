@@ -181,11 +181,11 @@ void Translator::EmitVectorAlu(const GcnInst& inst) {
     case Opcode::V_RCP_IFLAG_F32:
         return V_RCP_F32(inst);
     case Opcode::V_RCP_CLAMP_F32:
-        return V_RCP_CLAMP_F32(inst);
+        return V_RCP_F32(inst);
     case Opcode::V_RSQ_CLAMP_F32:
-        return V_RSQ_CLAMP_F32(inst);
+        return V_RSQ_F32(inst);
     case Opcode::V_RSQ_LEGACY_F32:
-        return V_RSQ_LEGACY_F32(inst);
+        return V_RSQ_F32(inst);
     case Opcode::V_RSQ_F32:
         return V_RSQ_F32(inst);
     case Opcode::V_SQRT_F32:

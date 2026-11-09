@@ -1141,7 +1141,7 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
             Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "dump_render_targets";
         static u32 frames_until_check = 0;
         if (frames_until_check-- == 0) {
-            frames_until_check = 120;
+            frames_until_check = 4;
             if (std::filesystem::exists(dump_flag, ec)) {
                 std::filesystem::remove(dump_flag, ec);
                 DumpGpuImages();
@@ -1604,7 +1604,7 @@ void Presenter::DumpGpuImages(std::string_view folder) {
     static const u32 ThumbWidth = [] {
         const char* value = std::getenv("SHADPS4_DUMP_WIDTH");
         const int width = value != nullptr ? std::atoi(value) : 0;
-        return width >= 64 ? static_cast<u32>(width) : 640u;
+        return width >= 64 ? static_cast<u32>(width) : 1280u;
     }();
     const auto dump_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / folder;
     std::error_code ec;
@@ -1752,6 +1752,27 @@ void Presenter::DumpGpuImages(std::string_view folder) {
 
         std::vector<u8> rgba(static_cast<size_t>(width) * height * 4);
         std::memcpy(rgba.data(), readback.buffer.mapped_data.data(), rgba.size());
+        {
+            u8 min_a = 0xff, max_a = 0x00;
+            for (size_t i = 3; i < rgba.size(); i += 4) {
+                min_a = std::min(min_a, rgba[i]);
+                max_a = std::max(max_a, rgba[i]);
+            }
+            if (min_a != max_a) {
+                std::vector<u8> alpha_img(rgba.size());
+                for (size_t i = 0; i < rgba.size(); i += 4) {
+                    const u8 a = rgba[i + 3];
+                    alpha_img[i + 0] = a;
+                    alpha_img[i + 1] = a;
+                    alpha_img[i + 2] = a;
+                    alpha_img[i + 3] = 0xff;
+                }
+                const auto alpha_path = dump_dir / fmt::format(
+                    "{:03}_{:x}_{}x{}_{}_s{}_alpha.png", index, info.guest_address,
+                    info.size.width, info.size.height, vk::to_string(info.pixel_format), samples);
+                WritePng(alpha_path, alpha_img, width, height);
+            }
+        }
         for (size_t i = 3; i < rgba.size(); i += 4) {
             rgba[i] = 0xff;
         }

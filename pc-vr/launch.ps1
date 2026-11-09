@@ -876,8 +876,8 @@ if ((Setting "fov_of" "headset") -ne "psvr") { $env:SHADPS4_VR_FOV_OF = "headset
 # fps: the most frames a second. (pace, the older way to say it: refreshes of the headset a
 # frame is given, 1 or more.)
 $fpsSetting = Setting "fps" "60"
-$env:SHADPS4_VR_FPS_CAP = $fpsSetting
-$env:SHADPS4_VR_REFRESH_RATE = $fpsSetting
+$env:SHADPS4_VR_FPS_CAP = "60"
+$env:SHADPS4_VR_REFRESH_RATE = "120"
 $pace = Setting "pace" ""
 if ($pace -eq "1") { $env:SHADPS4_VR_FASTEST_PACE = "1"; $env:SHADPS4_VR_FPS_CAP = "" } elseif ($pace -ne "" -and $pace -ne "2") { $env:SHADPS4_VR_PACE = $pace }
 if ((Setting "headset" "1") -eq "0") { $env:SHADPS4_OPENXR = "0" }
@@ -923,10 +923,8 @@ if (Test-Path $cfgPath) {
             $changed = $true
         }
         if ($null -ne $cfgJson.GPU.vblank_frequency) {
-            $fpsVal = 60
-            [void][int]::TryParse($fpsSetting, [ref]$fpsVal)
-            if ($cfgJson.GPU.vblank_frequency -ne $fpsVal) {
-                $cfgJson.GPU.vblank_frequency = $fpsVal
+            if ($cfgJson.GPU.vblank_frequency -ne 60) {
+                $cfgJson.GPU.vblank_frequency = 60
                 $changed = $true
             }
         }
