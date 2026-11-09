@@ -1198,11 +1198,29 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             ASSERT(adjust % 4 == 0);
             push_data.AddOffset(binding.buffer, adjust);
             buffer_infos.emplace_back(vk_buffer->Handle(), offset_aligned, size + adjust);
-            if (auto barrier =
-                    vk_buffer->GetBarrier(desc.is_written ? vk::AccessFlagBits2::eShaderWrite
-                                                          : vk::AccessFlagBits2::eShaderRead,
-                                          vk::PipelineStageFlagBits2::eAllCommands)) {
-                buffer_barriers.emplace_back(*barrier);
+            bool first_for_buffer = true;
+            for (u32 j = 0; j < i; ++j) {
+                if (std::get<0>(buffer_bindings[j]) == buffer_id) {
+                    first_for_buffer = false;
+                    break;
+                }
+            }
+            if (first_for_buffer) {
+                bool any_written = desc.is_written;
+                for (u32 j = i + 1; j < buffer_bindings.size(); ++j) {
+                    if (std::get<0>(buffer_bindings[j]) == buffer_id &&
+                        stage.buffers[j].is_written) {
+                        any_written = true;
+                        break;
+                    }
+                }
+                if (auto barrier = vk_buffer->GetBarrier(
+                        any_written ? (vk::AccessFlagBits2::eShaderRead |
+                                       vk::AccessFlagBits2::eShaderWrite)
+                                    : vk::AccessFlagBits2::eShaderRead,
+                        vk::PipelineStageFlagBits2::eAllCommands)) {
+                    buffer_barriers.emplace_back(*barrier);
+                }
             }
             if (desc.is_written && desc.is_formatted) {
                 texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, size);

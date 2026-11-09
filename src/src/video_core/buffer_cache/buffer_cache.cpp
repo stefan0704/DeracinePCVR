@@ -253,12 +253,10 @@ void BufferCache::BindVertexBuffers(
         const auto [buffer, offset] = ObtainBuffer(range.base_address, size, false);
         range.vk_buffer = buffer->buffer;
         range.offset = offset;
-        if (IsRegionGpuModified(range.base_address, size)) {
-            if (auto barrier =
-                    buffer->GetBarrier(vk::AccessFlagBits2::eVertexAttributeRead,
-                                       vk::PipelineStageFlagBits2::eVertexAttributeInput)) {
-                barriers.emplace_back(*barrier);
-            }
+        if (auto barrier =
+                buffer->GetBarrier(vk::AccessFlagBits2::eVertexAttributeRead,
+                                   vk::PipelineStageFlagBits2::eVertexAttributeInput)) {
+            barriers.emplace_back(*barrier);
         }
     }
 
@@ -320,11 +318,9 @@ void BufferCache::BindIndexBuffer(
     // Bind index buffer.
     const u32 index_buffer_size = regs.num_indices * index_size;
     const auto [vk_buffer, offset] = ObtainBuffer(index_address, index_buffer_size, false);
-    if (IsRegionGpuModified(index_address, index_buffer_size)) {
-        if (auto barrier = vk_buffer->GetBarrier(vk::AccessFlagBits2::eIndexRead,
-                                                 vk::PipelineStageFlagBits2::eIndexInput)) {
-            barriers.emplace_back(*barrier);
-        }
+    if (auto barrier = vk_buffer->GetBarrier(vk::AccessFlagBits2::eIndexRead,
+                                             vk::PipelineStageFlagBits2::eIndexInput)) {
+        barriers.emplace_back(*barrier);
     }
     const auto cmdbuf = scheduler.CommandBuffer();
     const Vulkan::FrameStats::CallTimer timer{Vulkan::FrameStats::Call::IndexBuffer};

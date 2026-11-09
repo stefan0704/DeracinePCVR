@@ -147,19 +147,16 @@ Id EmitFPRecip32(EmitContext& ctx, Id value) {
     // Special inputs (±0, ±Inf, NaN, denormal overflow) make the refinement
     // non-finite; those fall back to the raw division result, which already
     // matches GCN special semantics.
-    const Id is_zero = ctx.OpFOrdEqual(ctx.U1[1], value, ctx.ConstF32(0.0f));
-    const Id safe_val = ctx.OpSelect(ctx.F32[1], is_zero, ctx.ConstF32(1.0f), value);
-    const Id x_r = ctx.OpFMul(ctx.F32[1], safe_val, raw);
+    const Id abs_val = ctx.OpFAbs(ctx.F32[1], value);
+    const Id in_range = ctx.OpLogicalAnd(
+        ctx.U1[1], ctx.OpFOrdGreaterThanEqual(ctx.U1[1], abs_val, ctx.ConstF32(1.17549435e-38f)),
+        ctx.OpFOrdLessThanEqual(ctx.U1[1], abs_val, ctx.ConstF32(8.507059e37f)));
+    const Id safe_val = ctx.OpSelect(ctx.F32[1], in_range, value, ctx.ConstF32(1.0f));
+    const Id safe_raw = ctx.OpFDiv(ctx.F32[1], ctx.ConstF32(1.0f), safe_val);
+    const Id x_r = ctx.OpFMul(ctx.F32[1], safe_val, safe_raw);
     const Id corr = ctx.OpFSub(ctx.F32[1], ctx.ConstF32(2.0f), x_r);
-    const Id refined = ctx.OpFMul(ctx.F32[1], raw, corr);
-    const Id out_of_range = ctx.OpLogicalOr(
-        ctx.U1[1], ctx.OpFUnordLessThanEqual(ctx.U1[1], x_r, ctx.ConstF32(0.5f)),
-        ctx.OpFUnordGreaterThanEqual(ctx.U1[1], x_r, ctx.ConstF32(1.5f)));
-    const Id bad = ctx.OpLogicalOr(ctx.U1[1], is_zero, out_of_range);
-
-
-
-    return ctx.OpSelect(ctx.F32[1], bad, raw, refined);
+    const Id refined = ctx.OpFMul(ctx.F32[1], safe_raw, corr);
+    return ctx.OpSelect(ctx.F32[1], in_range, refined, raw);
 }
 
 Id EmitFPRecip64(EmitContext& ctx, Id value) {
@@ -167,7 +164,8 @@ Id EmitFPRecip64(EmitContext& ctx, Id value) {
 }
 
 Id EmitFPRecipSqrt32(EmitContext& ctx, Id value) {
-    return ctx.OpInverseSqrt(ctx.F32[1], value);
+    const Id safe_val = ctx.OpFMax(ctx.F32[1], value, ctx.ConstF32(1.17549435e-38f));
+    return ctx.OpInverseSqrt(ctx.F32[1], safe_val);
 }
 
 Id EmitFPRecipSqrt64(EmitContext& ctx, Id value) {
@@ -175,7 +173,8 @@ Id EmitFPRecipSqrt64(EmitContext& ctx, Id value) {
 }
 
 Id EmitFPSqrt(EmitContext& ctx, Id value) {
-    return ctx.OpSqrt(ctx.F32[1], value);
+    const Id safe_val = ctx.OpFMax(ctx.F32[1], value, ctx.ConstF32(0.0f));
+    return ctx.OpSqrt(ctx.F32[1], safe_val);
 }
 
 Id EmitFPSaturate32(EmitContext& ctx, Id value) {

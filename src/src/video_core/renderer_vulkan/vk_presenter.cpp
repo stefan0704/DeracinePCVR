@@ -1606,9 +1606,13 @@ void Presenter::DumpGpuImages(std::string_view folder) {
         const int width = value != nullptr ? std::atoi(value) : 0;
         return width >= 64 ? static_cast<u32>(width) : 1280u;
     }();
-    const auto dump_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / folder;
+    const auto base_dump_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / folder;
     std::error_code ec;
-    std::filesystem::remove_all(dump_dir, ec);
+    static u32 capture_seq = 0;
+    if (capture_seq == 0) {
+        std::filesystem::remove_all(base_dump_dir, ec);
+    }
+    const auto dump_dir = base_dump_dir / fmt::format("capture_{:02}", ++capture_seq);
     std::filesystem::create_directories(dump_dir, ec);
 
     // Collect first: transitions and submits below must not run under the cache lock.
