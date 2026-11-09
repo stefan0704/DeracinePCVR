@@ -35,7 +35,7 @@ desktop_crop=0
 readbacks=relaxed
 readback_linear_images=0
 # copy_gpu_buffers=1 prevents command buffer race conditions and missing meshes.
-copy_gpu_buffers=0
+copy_gpu_buffers=1
 
 # Move controller 6DoF calibration (pitch in degrees, offsets in meters):
 # Defaults: move_pitch=-45, move_y=0.000, move_z=-0.135, move_x=0.0

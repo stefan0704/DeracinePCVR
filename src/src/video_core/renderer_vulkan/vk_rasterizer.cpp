@@ -1128,7 +1128,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
         const auto vsharp = desc.GetSharp(stage);
         if (!desc.IsSpecial() && vsharp.base_address != 0 && vsharp.GetSize() > 0) {
             const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
-            if (!desc.is_written && size <= VideoCore::BufferCache::CACHING_PAGESIZE &&
+            const bool is_storage = desc.IsStorage(vsharp);
+            if (!desc.is_written && !is_storage && !desc.is_formatted &&
+                size <= VideoCore::BufferCache::CACHING_PAGESIZE &&
                 !buffer_cache.IsRegionGpuModified(vsharp.base_address, size)) {
                 buffer_bindings.emplace_back(kStreamFastPathId, vsharp, size);
             } else {

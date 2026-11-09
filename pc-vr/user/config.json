@@ -11,12 +11,12 @@
     "sdl_padSpk_output_device": "Default Device"
   },
   "Debug": {
-    "config_version": "f6e23524b2e5813ed6fc6e5fdfb276c9e22a6794",
+    "config_version": "6b2b7561ecc422c5a2648d141a10bf8618e0d9f8",
     "debug_dump": false,
     "shader_collect": false
   },
   "GPU": {
-    "copy_gpu_buffers": false,
+    "copy_gpu_buffers": true,
     "direct_memory_access_enabled": false,
     "dump_shaders": false,
     "fast_shader_math": false,

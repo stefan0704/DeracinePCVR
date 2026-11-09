@@ -1231,8 +1231,7 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         return value != nullptr && std::string_view{value} == "1";
     }();
     const bool crop = spectator && desktop_crop;
-    const float desktop_aspect = Core::Vr::DesktopViewAspect(
-        desktop_view, fov, static_cast<float>(eye_width) / eye_height);
+    const float desktop_aspect = static_cast<float>(eye_width) / eye_height;
     // Compute target resolution for OpenXR swapchain.
     // When SHADPS4_TITLE_EYE_WIDTH (from settings.txt resolution) or SHADPS4_VR_SCALE is set,
     // upscale the OpenXR swapchain so modern VR headsets (Quest 2/3, etc.) receive a supersampled
@@ -1421,7 +1420,14 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
             const vk::Rect2D content{{bounds.x, bounds.y}, {bounds.width, bounds.height}};
             const vk::Rect2D clip{{bounds.x, std::max(0, bounds.y)},
                                   {bounds.width, std::min(bounds.height, target.height)}};
-            regions.push_back({.input = overlay_views[0], .area = content, .clip = clip});
+            const vk::Rect2D draw_area = is_sbs ? vk::Rect2D{
+                .offset = content.offset,
+                .extent = {
+                    .width = content.extent.width * 2,
+                    .height = content.extent.height,
+                },
+            } : content;
+            regions.push_back({.input = overlay_views[0], .area = draw_area, .clip = clip});
         } else {
             const u32 half_width = target.width / 2;
             for (u32 eye = 0; eye < 2; ++eye) {
@@ -1470,37 +1476,22 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         const vk::Rect2D content{{bounds.x, bounds.y}, {bounds.width, bounds.height}};
         const vk::Rect2D clip{{bounds.x, std::max(0, bounds.y)},
                              {bounds.width, std::min(bounds.height, frame->height)}};
-        if (spectator && desktop_view == Core::Vr::DesktopView::Combined) {
-            const auto layout = Core::Vr::CombinedEyeRegions(content.extent.width, fov);
-            const auto region_for = [&](u32 eye) {
-                const auto& region = layout[eye];
-                return HostPasses::PostProcessingPass::Region{
-                    .input = eye_views[eye],
-                    .area{
-                        .offset{.x = content.offset.x + static_cast<s32>(region.x),
-                                .y = content.offset.y},
-                        .extent{.width = region.width, .height = content.extent.height},
-                    },
-                    .clip = vk::Rect2D{
-                        .offset{.x = content.offset.x + static_cast<s32>(region.clip_x),
-                                .y = clip.offset.y},
-                        .extent{.width = region.clip_width, .height = clip.extent.height},
-                    },
-                };
-            };
-            const std::array regions{region_for(0), region_for(1)};
-            const auto count = layout[1].clip_width == 0 ? 1u : 2u;
-            pp_pass.Render(cmdbuf, std::span{regions}.first(count), *frame, hmd_settings);
-        } else if (spectator) {
-            const std::array regions{
-                HostPasses::PostProcessingPass::Region{
-                    .input = eye_views[0], .area = content, .clip = clip},
-            };
-            pp_pass.Render(cmdbuf, regions, *frame, hmd_settings);
-        } else {
-            pp_pass.Render(cmdbuf, regions_for(*frame), *frame, hmd_settings,
-                           exported ? std::nullopt : std::optional<u32>{frame_id});
-        }
+        const vk::Rect2D draw_area = is_sbs ? vk::Rect2D{
+            .offset = content.offset,
+            .extent = {
+                .width = content.extent.width * 2,
+                .height = content.extent.height,
+            },
+        } : content;
+        const std::array regions{
+            HostPasses::PostProcessingPass::Region{
+                .input = eye_views[0], .area = draw_area, .clip = clip},
+        };
+        auto desktop_settings = hmd_settings;
+        desktop_settings.sharpen = 0.0f;
+        desktop_settings.antialias = 0;
+        pp_pass.Render(cmdbuf, regions, *frame, desktop_settings,
+                       exported ? std::nullopt : std::optional<u32>{frame_id});
         if (has_overlay) {
             pp_pass.RenderOverlay(cmdbuf, overlay_regions_for(*frame), *frame);
         }
