@@ -928,20 +928,16 @@ if (Test-Path $cfgPath) {
                 $changed = $true
             }
         }
-        if ($null -ne $cfgJson.Vulkan.pipeline_cache_enabled -and $cfgJson.Vulkan.pipeline_cache_enabled) {
-            $cfgJson.Vulkan.pipeline_cache_enabled = $false
+        if ($null -ne $cfgJson.Vulkan.pipeline_cache_enabled -and -not $cfgJson.Vulkan.pipeline_cache_enabled) {
+            $cfgJson.Vulkan.pipeline_cache_enabled = $true
             $changed = $true
-        }
-        $gameCache = Join-Path $here "user\cache\CUSA11919"
-        if (Test-Path $gameCache) {
-            Remove-Item -Path $gameCache -Recurse -Force -ErrorAction SilentlyContinue
         }
         if ($null -ne $cfgJson.Log.sync -and $cfgJson.Log.sync) {
             $cfgJson.Log.sync = $false
             $changed = $true
         }
-        if ($null -ne $cfgJson.Log.filter -and $cfgJson.Log.filter -ne "*:Info") {
-            $cfgJson.Log.filter = "*:Info"
+        if ($null -ne $cfgJson.Log.filter -and $cfgJson.Log.filter -ne "*:Warning Core_Vr:Info") {
+            $cfgJson.Log.filter = "*:Warning Core_Vr:Info"
             $changed = $true
         }
         if ($changed) {

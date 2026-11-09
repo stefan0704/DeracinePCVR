@@ -253,10 +253,12 @@ void BufferCache::BindVertexBuffers(
         const auto [buffer, offset] = ObtainBuffer(range.base_address, size, false);
         range.vk_buffer = buffer->buffer;
         range.offset = offset;
-        if (auto barrier =
-                buffer->GetBarrier(vk::AccessFlagBits2::eVertexAttributeRead,
-                                   vk::PipelineStageFlagBits2::eVertexAttributeInput)) {
-            barriers.emplace_back(*barrier);
+        if (IsRegionGpuModified(range.base_address, size)) {
+            if (auto barrier =
+                    buffer->GetBarrier(vk::AccessFlagBits2::eVertexAttributeRead,
+                                       vk::PipelineStageFlagBits2::eVertexAttributeInput)) {
+                barriers.emplace_back(*barrier);
+            }
         }
     }
 
@@ -318,9 +320,11 @@ void BufferCache::BindIndexBuffer(
     // Bind index buffer.
     const u32 index_buffer_size = regs.num_indices * index_size;
     const auto [vk_buffer, offset] = ObtainBuffer(index_address, index_buffer_size, false);
-    if (auto barrier = vk_buffer->GetBarrier(vk::AccessFlagBits2::eIndexRead,
-                                             vk::PipelineStageFlagBits2::eIndexInput)) {
-        barriers.emplace_back(*barrier);
+    if (IsRegionGpuModified(index_address, index_buffer_size)) {
+        if (auto barrier = vk_buffer->GetBarrier(vk::AccessFlagBits2::eIndexRead,
+                                                 vk::PipelineStageFlagBits2::eIndexInput)) {
+            barriers.emplace_back(*barrier);
+        }
     }
     const auto cmdbuf = scheduler.CommandBuffer();
     const Vulkan::FrameStats::CallTimer timer{Vulkan::FrameStats::Call::IndexBuffer};
@@ -560,8 +564,8 @@ std::pair<Buffer*, u32> BufferCache::AcquireImageStagingSlot(u32 size) {
         slot.generation = next_image_staging_generation++;
         slot.tick = scheduler.CurrentTick();
         ++image_staging_stats_acquired;
-        LOG_WARNING(Render_Vulkan,
-                    "UPLOAD_STAGING_ACQUIRED slot={} generation={} capacity={:#x} need={:#x} "
+        LOG_DEBUG(Render_Vulkan,
+                  "UPLOAD_STAGING_ACQUIRED slot={} generation={} capacity={:#x} need={:#x} "
                     "tick={} reused={} path=image_staging_ring buffer={:#x}",
                     static_cast<u32>(&slot - image_staging_slots.data()), slot.generation,
                     slot.capacity, need, slot.tick, reused ? 1 : 0,
@@ -584,8 +588,8 @@ std::pair<Buffer*, u32> BufferCache::AcquireImageStagingSlot(u32 size) {
                                                AllFlags, need);
         slot.capacity = need;
         image_staging_slots.push_back(std::move(slot));
-        LOG_WARNING(Render_Vulkan,
-                    "UPLOAD_STAGING_GROWN slots={} capacity={:#x} path=image_staging_ring",
+        LOG_DEBUG(Render_Vulkan,
+                  "UPLOAD_STAGING_GROWN slots={} capacity={:#x} path=image_staging_ring",
                     image_staging_slots.size(), need);
     }
 
@@ -600,8 +604,8 @@ std::pair<Buffer*, u32> BufferCache::AcquireImageStagingSlot(u32 size) {
                                                AllFlags, need);
         slot.capacity = need;
         image_staging_slots.push_back(std::move(slot));
-        LOG_WARNING(Render_Vulkan,
-                    "UPLOAD_STAGING_GROWN slots={} capacity={:#x} path=image_staging_ring",
+        LOG_DEBUG(Render_Vulkan,
+                  "UPLOAD_STAGING_GROWN slots={} capacity={:#x} path=image_staging_ring",
                     image_staging_slots.size(), need);
         if (ImageStagingSlot* free = try_find_free()) {
             return claim(*free, false);

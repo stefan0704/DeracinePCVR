@@ -179,8 +179,9 @@ public:
     MemoryUsage usage;
     UniqueBuffer buffer;
     vk::Flags<vk::AccessFlagBits2> access_mask{
-        vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite |
-        vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite};
+        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eVertexAttributeRead |
+        vk::AccessFlagBits2::eIndexRead | vk::AccessFlagBits2::eUniformRead |
+        vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eMemoryRead};
     vk::PipelineStageFlagBits2 stage{vk::PipelineStageFlagBits2::eAllCommands};
 };
 

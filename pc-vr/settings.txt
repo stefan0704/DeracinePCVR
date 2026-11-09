@@ -9,7 +9,7 @@
 # 60 is the PS4 console's native VR rate. Set your headset refresh rate to 120 Hz
 # for a smooth 60 or 120 fps presentation.
 fps=60
-resolution=2880
+resolution=2160
 dynamic=0
 
 # How much of the headset's field of view the game draws, in percent, 70 to 100.
@@ -35,7 +35,7 @@ desktop_crop=0
 readbacks=relaxed
 readback_linear_images=0
 # copy_gpu_buffers=1 prevents command buffer race conditions and missing meshes.
-copy_gpu_buffers=1
+copy_gpu_buffers=0
 
 # Move controller 6DoF calibration (pitch in degrees, offsets in meters):
 # Defaults: move_pitch=-45, move_y=0.000, move_z=-0.135, move_x=0.0

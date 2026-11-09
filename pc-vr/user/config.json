@@ -16,7 +16,7 @@
     "shader_collect": false
   },
   "GPU": {
-    "copy_gpu_buffers": true,
+    "copy_gpu_buffers": false,
     "direct_memory_access_enabled": false,
     "dump_shaders": false,
     "fast_shader_math": false,
@@ -87,7 +87,7 @@
   "Log": {
     "append": false,
     "enable": true,
-    "filter": "*:Info",
+    "filter": "*:Warning Core_Vr:Info",
     "flush_level": "",
     "max_skip_duration": 5000,
     "separate": false,
@@ -109,7 +109,7 @@
   "Vulkan": {
     "gpu_id": -1,
     "pipeline_cache_archived": false,
-    "pipeline_cache_enabled": false,
+    "pipeline_cache_enabled": true,
     "renderdoc_enabled": false,
     "vkcrash_diagnostic_enabled": false,
     "vkguest_markers": false,
