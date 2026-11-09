@@ -20,7 +20,7 @@ fov=100
 menu=1
 
 # Sharpening (RCAS/CAS), 0 to 1.
-sharpen=0.35
+sharpen=0.50
 aniso=16
 
 # Multi-Sample Anti-Aliasing (MSAA: 1, 2, 4, 8)
@@ -28,7 +28,7 @@ msaa=4
 antialias=0
 
 # Desktop mirror view mode: "stereo" (both eyes side-by-side), "spectator" (single eye), "combined"
-desktop_view=stereo
+desktop_view=spectator
 desktop_crop=0
 
 # GPU Readbacks mode: "precise" (fixes missing face geometry/morph glitch), "relaxed", "disabled"

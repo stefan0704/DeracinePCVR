@@ -593,7 +593,7 @@ public:
         const auto display = Core::Vr::Runtime::Instance().GetDisplayRefresh();
         // A host that misses a few refreshes of its display is still followed: the display
         // went on refreshing. One that says nothing for longer has stopped showing pictures.
-        if (display.sequence == 0 || now - display.time > Silence * period || std::abs(display.rate - 120.0f) > 2.0f) {
+        if (display.sequence == 0 || now - display.time > Silence * period) {
             if (following) {
                 following = false;
                 look = 0;

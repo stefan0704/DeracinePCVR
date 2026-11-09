@@ -805,7 +805,7 @@ void Rasterizer::DispatchDirect() {
         LOG_INFO(Render_Vulkan, "TRACE dispatch {}x{}x{} pipeline={}", cs_program.dim_x,
                  cs_program.dim_y, cs_program.dim_z, pipeline != nullptr);
     }
-    if (!pipeline) {
+    if (!pipeline || cs_program.dim_x == 0 || cs_program.dim_y == 0 || cs_program.dim_z == 0) {
         return;
     }
 

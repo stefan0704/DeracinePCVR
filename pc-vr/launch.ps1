@@ -116,9 +116,7 @@ function Get-VrInstructions([string]$runtime) {
 }
 
 function Get-DesktopView {
-    if ((Setting "desktop_view" "stereo") -eq "combined") { return "combined" }
-    if ((Setting "desktop_view" "stereo") -eq "spectator") { return "spectator" }
-    return "stereo"
+    return "spectator"
 }
 
 Add-Type -AssemblyName System.Windows.Forms

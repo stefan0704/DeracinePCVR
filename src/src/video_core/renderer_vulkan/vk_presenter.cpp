@@ -1225,7 +1225,7 @@ HmdFrames Presenter::PrepareHmdFrame(const Libraries::VideoOut::HmdFrame& hmd_fr
         const char* value = std::getenv("SHADPS4_VR_DESKTOP_VIEW");
         return Core::Vr::ParseDesktopView(value != nullptr ? value : "");
     }();
-    const bool spectator = desktop_view != Core::Vr::DesktopView::Stereo && !exported;
+    const bool spectator = true; // Always present single left-eye spectator view to desktop window
     static const bool desktop_crop = [] {
         const char* value = std::getenv("SHADPS4_VR_DESKTOP_CROP");
         return value != nullptr && std::string_view{value} == "1";
