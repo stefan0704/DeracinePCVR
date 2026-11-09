@@ -1,4 +1,4 @@
-# Settings for "Play Deracine VR.bat", one key=value a line. Lines starting with # are ignored;
+﻿# Settings for "Play Deracine VR.bat", one key=value a line. Lines starting with # are ignored;
 # what is commented out below shows the value that applies when the line is left out.
 
 # game: Location of the game's eboot.bin or .pkg package.

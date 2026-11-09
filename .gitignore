@@ -7,6 +7,7 @@ pc-vr/user/log/
 pc-vr/user/home/
 pc-vr/user/cache/
 pc-vr/user/crash_dumps/
+pc-vr/user/rt_dump/
 pc-vr/user/download/
 pc-vr/user/imgui.ini
 pc-vr/user/play_time.txt
