@@ -1,144 +1,210 @@
-# Traspaso y Documentación Técnica: Actualización a shadPS4 v0.21.0
+# Guía Maestra de Traspaso y Optimización (shadPS4 v0.21.0 — Déraciné PCVR)
 
-> **Fecha**: Noviembre 2026  
-> **Rama de trabajo**: `actualizacion-v0.21.0` (origen: `origin/actualizacion-v0.21.0`)  
-> **Juego objetivo**: *Déraciné* (CUSA11919) — PlayStation VR exclusivo en PCVR  
-> **Versión base upstream**: shadPS4 `v0.21.0` ("Until Mavethee Dawn")  
-> **Estado**: Compilación CI en GitHub Actions superada con éxito (Run `41464795210`). Binario desplegado en `pc-vr/shadps4.exe`. Listo para pruebas en visor VR.
+> **Fecha de actualización**: 9 de noviembre de 2026  
+> **Rama activa de trabajo (Optimización)**: `optimizacion-rendimiento-v0.21.0`  
+> **Rama de respaldo intocable (Golden Build)**: `actualizacion-v0.21.0` (commit `1d2f3936`)  
+> **Release publicada**: `v0.21.0-beta` (`DeracinePCVR-v0.21.0-beta.zip`)  
+> **Propósito de este documento**: Servir de guía técnica exhaustiva y paso a paso para que un modelo más ligero y económico pueda seguir optimizando el rendimiento (FPS y tiempos de carga) y la calidad visual de *Déraciné* sin romper ninguna de las correcciones gráficas ya logradas.
 
 ---
 
-## 1. Reglas Críticas para Nuevos Agentes
+## 1. Reglas Inviolables para el Agente
 
-1. **Idioma de comunicación**: Siempre en **español** con el usuario.
-2. **Autor y Committer de Git**: Siempre usar obligatoriamente:
-   ```bash
+1. **Idioma**: Hablar siempre en **español** con el usuario.
+2. **Identidad Git (Obligatorio antes de cualquier commit)**:
+   ```powershell
    git config user.name "stefan0704"
    git config user.email "26739250+stefan0704@users.noreply.github.com"
    ```
-   *(GitHub rechaza pushes si el email no es el noreply oficial de la cuenta, error `GH007`).*
-3. **Aislamiento de Ramas**:
-   - Todo el trabajo de esta versión está en `actualizacion-v0.21.0`.
-   - **NUNCA** modificar ni hacer push directo a la rama `optimizacion-graficos` salvo petición explícita del usuario.
-4. **Mapeo de Mandos**:
-   - Nunca alterar `swap_hands=1` en `pc-vr/settings.txt`. El juego exige este orden específico para los mandos PS Move emulados.
-5. **Enfoque paso a paso**: Un cambio lógico por commit, verificando compilación o comportamiento.
+3. **Control Estricto de Ramas**:
+   - **TRABAJAR SIEMPRE EN**: `optimizacion-rendimiento-v0.21.0`.
+   - **PROHIBIDO TOCAR `actualizacion-v0.21.0`**: Esa rama guarda el estado dorado (`1d2f3936`) donde todas las texturas, caras, flores y uvas funcionan al 100%. Es nuestro punto de restauración seguro.
+   - **PROHIBIDO TOCAR `optimizacion-graficos`**.
+4. **Comandos en PowerShell**:
+   - En Windows PowerShell no uses `&&` para encadenar comandos (da error de sintaxis); usa `;` o ejecuta un script `.py` en la carpeta `scratch`.
 
 ---
 
-## 2. Arquitectura del Proyecto
+## 2. Qué Hemos Arreglado y NO SE DEBE ROMPER JAMÁS
 
-Déraciné PCVR es un fork especializado de **shadPS4** (heredado inicialmente de AstroQuest por bigmak94) que implementa:
-1. **OpenXR PCVR nativo**:
-   - Soporte para Meta Quest 2/3/Pro (Virtual Desktop / Meta Link / Steam Link), Valve Index, Bigscreen Beyond, HTC Vive, etc.
-   - Traduce `libSceHmd` y `libSceVrTracker` directamente a sesiones de OpenXR y presentación estereoscópica Vulkan.
-2. **Emulación 6DoF de PlayStation Move (`libSceMove`)**:
-   - A diferencia de otros juegos de PSVR (como Astro Bot que usan DualShock 4), *Déraciné* requiere obligatoriamente **dos mandos PlayStation Move**.
-   - Emulación 6DoF con compensación de palanca de la esfera luminosa (`move_pitch=-45°` o `-52°`, compensación de eje $Z$ y posición local para alinear las manos con los mandos físicos del visor).
-3. **Pipeline Vulkan y Liverpool**:
-   - Presentación de imágenes estéreo mediante `vk_presenter.cpp` y buffers compartidos OpenXR.
-   - Gestión de tareas y fences de GPU para evitar deadlocks en `liverpool.cpp`.
+Durante la depuración de v0.21.0 resolvimos un fallo crítico donde la cara de la chica, la flor y las uvas tenían agujeros transparentes, triángulos negros o desaparecían al animarse. **La causa raíz era una condición de carrera en GPU entre 51 Compute Shaders (`DispatchDirect`) que acumulaban morph targets sobre el mismo buffer (`0x2038a80000`) sin barreras de memoria Vulkan entre sí, sumada a `NaN`s por división entre cero en pesos de morph nulos.**
 
----
+### Archivos y bloques que NUNCA debes eliminar ni debilitar:
 
-## 3. Resumen de Cambios y Errores Corregidos (v0.21.0)
+1. **[`src/src/video_core/buffer_cache/buffer.h`](file:///e:/DeracinePCVR/src/src/video_core/buffer_cache/buffer.h#L127-L164) (`Buffer::GetBarrier`)**:
+   - La condición de salida temprana **DEBE** seguir siendo:
+     ```cpp
+     if (!src_is_write && !dst_is_write && dst_acess_mask == access_mask && stage == dst_stage) {
+         return {};
+     }
+     ```
+   - **Por qué**: Cuando un Compute Shader escribe en un buffer (`dst_is_write == true`) y el siguiente Compute Shader también escribe/lee en ese mismo buffer (`src_is_write == true`, `dst_is_write == true`), `dst_acess_mask == access_mask` es verdadero. Si quitas `!src_is_write && !dst_is_write`, Vulkan omite la barrera entre los 51 Compute Shaders y se vuelven a romper la cara de la chica, la flor y las uvas.
 
-Al fusionar la base de código de shadPS4 v0.21.0 con las extensiones VR de Déraciné, surgieron discrepancias de API y dependencias que se solucionaron una a una:
+2. **[`src/src/video_core/renderer_vulkan/vk_rasterizer.cpp`](file:///e:/DeracinePCVR/src/src/video_core/renderer_vulkan/vk_rasterizer.cpp#L1201-L1224) (`Rasterizer::BindBuffers`)**:
+   - Un mismo Compute Shader enlaza el mismo buffer (`0x2038a80000`) dos veces en la misma etapa (por ejemplo, slot 0 como `is_written=true` y slot 1 como `is_written=false`).
+   - El bucle `first_for_buffer` / `any_written` garantiza que solo se llame a `vk_buffer->GetBarrier(...)` **una vez por `BufferId` único en cada etapa**, usando `eShaderRead | eShaderWrite` si cualquiera de sus bindings en esa etapa tiene `is_written == true`. **No elimines nunca esta deduplicación**.
 
-### 3.1. Reestructuración de Módulos VR en CMake (`src/CMakeLists.txt`)
-- **Problema**: El linker producía errores de símbolos indefinidos: `Hmd::RegisterLib`, `VrTracker::RegisterLib`, `HmdSetupDialog::RegisterLib`, `Hmd::OnVblank`.
-- **Causa**: Había dos sentencias `set(VR_LIBS ...)` consecutivas en `src/CMakeLists.txt`. La segunda sobreescribía a la primera en lugar de concatenarse, eliminando `hmd.cpp`, `hmd_reprojection.cpp`, `hmd_distortion.cpp`, `hmd_setup_dialog.cpp` y `vr_tracker.cpp`.
-- **Solución**: Se unificaron en una única lista completa de `VR_LIBS`.
+3. **[`src/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp`](file:///e:/DeracinePCVR/src/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp#L140-L178) (`EmitFPRecip32`, `EmitFPRecipSqrt32`, `EmitFPSqrt`)**:
+   - En GCN (PS4), `v_rsq_f32(0.0)` y `v_rcp_f32(0.0)` no corrompen los vértices como ocurre en Vulkan con `FastMath` en GPUs NVIDIA.
+   - Mantén siempre los `OpFMax(..., 1e-30f)` y `OpSelect(OpFOrdEqual(v, 0.0f), 0.0f, ...)`. **Nunca uses `ctx.OpIsNan` ni `ctx.OpIsInf`** porque con `ExecutionModeSignedZeroInfNanPreserve` desactivado el driver de NVIDIA los optimiza a `false`.
 
-### 3.2. Adaptación de `vk_presenter.cpp` a la API Vulkan de v0.21.0
-- **Descargas de textura**: La API `Download()` cambió a `HostCached()`.
-- **Transición de imágenes**: `image.Transit(...)` fue reemplazado por `runtime.Transit(...)` seguido de `FlushBarriers()`.
-- **Swizzle de componentes**: `vk::ComponentSwizzle` fue sustituido por `AmdGpu::CompSwizzle`.
-- **Splash Screen**: La carga de pantalla de inicio cambió de `GetSplashPath()` a `ElfInfo::GetSplashData()` combinado con `RefCountedTexture::DecodePngTexture`.
-- **Funciones de depuración/trazado eliminadas en v0.21.0**: Se crearon stubs seguros para `DumpGpuImages`, `TraceSync`, `IsSyncTraceEnabled`, `StartDrawTrace`, `DrawTraceActive`, `EyesUpscaled`, `UpscaledRadius` y `AllowsViewFormat`.
-
-### 3.3. Detección de Hilos GPU y Tareas en Liverpool (`liverpool.h` y `liverpool.cpp`)
-- **Problema**: El código VR necesita saber si la llamada se ejecuta desde el hilo gráfico para evitar deadlocks de fences (`IsGpuThread()` e `InGfxTask()`).
-- **Solución**: Se restauraron `IsGpuThread()`, `InGfxTask()` y la bandera atómica `in_gfx_task` envolviendo `task.resume()`.
-
-### 3.4. Host Shaders y Push Descriptors en Post-Processing (`pp_pass.cpp`)
-- **Problema**: `IsPushDescriptorSupported` y `HostShaders` no existían en v0.21.0.
-- **Solución**: Se sustituyó por `instance.MaxPushDescriptors() > 0` y la compilación directa `CompileSPV(FS_TRI_VERT, device)` y `CompileSPV(POST_PROCESS_FRAG, device)`.
-
-### 3.5. Stubs en `vk_gpu_profile.h`
-- **Problema**: `GpuProfile::NoteFrameDone()` daba error de símbolo no resuelto en el enlazado.
-- **Solución**: Se inlinaron stubs en el encabezado: `NoteFrameDone() {}` y `Enabled() { return false; }`.
-
-### 3.6. Limpieza de Watchdogs Obsoletos en `hmd_reprojection.cpp`
-- **Problema**: `Core::GuestCpu::NoteGuestProgress()` ya no existía en el núcleo x86 (era legacy de Android/FEX).
-- **Solución**: Se eliminaron las llamadas en las líneas 269 y 366 de `hmd_reprojection.cpp`.
-
-### 3.7. Encabezados y Clases Faltantes
-- `stall_log.h`: Restaurado en `src/src/video_core/amdgpu/stall_log.h` y registrado en `CMakeLists.txt`.
-- `Core_Vr`: Restaurada la categoría de registro en `classes.h` y `classes.cpp`.
-- `controller.h` / `controller.cpp`: Restaurados `SetBlowing`, `SetHeadsetPlays`, `ApplyHeadsetState`.
-- `dr_flac.h`: Se des-ignoró en `.gitignore` para permitir incluir el códec de audio FLAC.
+4. **[`src/src/core/vr/hmd.cpp`](file:///e:/DeracinePCVR/src/src/core/vr/hmd.cpp#L283-L304) (Reloj de consola a 60 FPS e intercambio de manos con `L3`)**:
+   - El motor de *Déraciné* está diseñado para simularse a **60 FPS fijos** (`kNativeFrameUs = 16667`, `native_frame_rate = 0`), mientras que el visor VR puede ir a 72, 80, 90 o 120 Hz mediante reproyección en `hmd_reprojection.cpp`. **No desbloquees los FPS internos de la consola por encima de 60**.
+   - El botón `L3` (pulsar el joystick izquierdo) intercambia las manos en vivo (`ToggleRuntimeHandSwap()`) y el botón `R3` vuelca los render targets en `pc-vr/rt_dump/capture_XX`.
 
 ---
 
-## 4. Descarga de Artefactos de CI (Solución al Error HTTP 401)
+## 3. Qué Optimizaciones Ya Están Aplicadas (Commit `26e4a83f`)
 
-### El Problema
-Al descargar un artefacto mediante la API de GitHub (`https://api.github.com/repos/.../actions/artifacts/{id}/zip`), GitHub responde con una redirección HTTP 302 a una URL prefirmada de Azure Blob Storage (`*.blob.core.windows.net`).  
-Las librerías HTTP estándar (como `urllib.request` en Python o herramientas que reenvían cabeceras a ciegas) reenvían el encabezado `Authorization: Bearer <github_token>` a Azure. Azure rechaza la petición con:
+1. **Inicialización de `Buffer::access_mask` a solo lectura en [`buffer.h:181-185`](file:///e:/DeracinePCVR/src/src/video_core/buffer_cache/buffer.h#L181-L185)**:
+   - Como `BufferCache::SynchronizeBuffer` ya emite su propio `pre_barrier` y `post_barrier` fuera del RenderPass al subir datos desde CPU, inicializar `access_mask` a `all_read_flags` evita que la primera lectura de cualquier buffer estático subido por CPU emita una barrera redundante y llame a `scheduler.EndRendering()`.
+2. **Guardas `IsRegionGpuModified` restauradas en [`buffer_cache.cpp:256,323`](file:///e:/DeracinePCVR/src/src/video_core/buffer_cache/buffer_cache.cpp#L256-L328)**:
+   - `BindVertexBuffers` y `BindIndexBuffer` solo piden barrera si el buffer fue modificado por la GPU (`IsRegionGpuModified == true`, que siempre es cierto para los buffers de morph targets escritos por Compute Shaders).
+3. **Caché de Pipelines de Vulkan activada y persistente en [`pc-vr/launch.ps1:931-942`](file:///e:/DeracinePCVR/pc-vr/launch.ps1#L931-L942)**:
+   - Ya no se borra `user\cache\CUSA11919` en cada arranque y `pipeline_cache_enabled = true`.
+4. **Ajustes en [`pc-vr/settings.txt`](file:///e:/DeracinePCVR/pc-vr/settings.txt)**:
+   - `resolution=2160`, `msaa=4`, `sharpen=0.35`, `copy_gpu_buffers=0`, `swap_hands=1`, `fps=60`.
+
+---
+
+## 4. Hoja de Ruta Paso a Paso para Seguir Optimizando (Para el Modelo Ligero)
+
+Aplica estas optimizaciones **de una en una**, haciendo commit, push a `optimizacion-rendimiento-v0.21.0`, esperando a que GitHub Actions compile (`build-windows.yml`) y descargando el ejecutable con `python tools/download-artifact.py`.
+
+---
+
+### Optimización Paso 1 (IMPACTO MUY ALTO EN CPU Y GPU): Evitar `FindBuffer` / `CreateBuffer` para buffers pequeños de solo lectura en `Rasterizer::BindBuffers`
+
+#### Diagnóstico exacto
+En [`src/src/video_core/renderer_vulkan/vk_rasterizer.cpp:1126-1135`](file:///e:/DeracinePCVR/src/src/video_core/renderer_vulkan/vk_rasterizer.cpp#L1126-L1135), `Rasterizer::BindBuffers` hace dos pasadas sobre `stage.buffers`:
+- En la **primera pasada** (línea 1130), llama incondicionalmente a `buffer_cache.FindBuffer(vsharp.base_address, size)` para **todos** los buffers de cada draw call.
+- Sin embargo, en la **segunda pasada** (líneas 1192-1195), llama a `buffer_cache.ObtainBuffer` o `buffer_cache.ObtainUniformBuffer`.
+- Si miras [`buffer_cache.cpp:451`](file:///e:/DeracinePCVR/src/src/video_core/buffer_cache/buffer_cache.cpp#L451) y [`buffer_cache.cpp:480`](file:///e:/DeracinePCVR/src/src/video_core/buffer_cache/buffer_cache.cpp#L480), cuando un buffer es de **solo lectura, pequeño (`size <= CACHING_PAGESIZE`, es decir `<= 16 KB`) y no ha sido modificado por GPU (`!IsRegionGpuModified`)**, `ObtainBuffer` **NO usa el `buffer_id` de `slot_buffers`**, sino que copia los datos directamente al `stream_buffer` (un ring buffer rápido mapeado en memoria).
+- **El problema**: Como la primera pasada de `BindBuffers` llamó a `FindBuffer(vsharp.base_address, size)` sin comprobar eso, `FindBuffer` llama a `CreateBuffer` para cada constante temporal que Unreal Engine 4 escribe en su ring buffer de CPU, lo cual:
+  1. Crea `VkBuffer`s inútiles en VMA que jamás se usan.
+  2. Ejecuta `JoinOverlap` (`buffer_cache.cpp:946`), que llama a **`scheduler.EndRendering()`** rompiendo el RenderPass en mitad del fotograma.
+  3. Registra las páginas del ring buffer de CPU en `memory_tracker` activando protección de escritura (`VirtualProtect`), lo que provoca **miles de excepciones `STATUS_ACCESS_VIOLATION` (Page Faults) por segundo en Windows** cuando la CPU del juego escribe las constantes del siguiente fotograma.
+
+#### Cómo implementarlo exactamente
+En [`src/src/video_core/renderer_vulkan/vk_rasterizer.cpp`](file:///e:/DeracinePCVR/src/src/video_core/renderer_vulkan/vk_rasterizer.cpp#L1122-L1228):
+1. Define una constante centinela al principio de `BindBuffers`:
+   ```cpp
+   constexpr VideoCore::BufferId kStreamFastPathId{0xFFFFFFFEu};
+   ```
+2. En el primer bucle (`líneas 1126-1135`), si `!desc.is_written && size <= VideoCore::BufferCache::CACHING_PAGESIZE && !buffer_cache.IsRegionGpuModified(vsharp.base_address, size)`, **no llames a `buffer_cache.FindBuffer`**:
+   ```cpp
+   for (const auto& desc : stage.buffers) {
+       const auto vsharp = desc.GetSharp(stage);
+       if (!desc.IsSpecial() && vsharp.base_address != 0 && vsharp.GetSize() > 0) {
+           const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
+           if (!desc.is_written && size <= VideoCore::BufferCache::CACHING_PAGESIZE &&
+               !buffer_cache.IsRegionGpuModified(vsharp.base_address, size)) {
+               buffer_bindings.emplace_back(kStreamFastPathId, vsharp, size);
+           } else {
+               const auto buffer_id = buffer_cache.FindBuffer(vsharp.base_address, size);
+               buffer_bindings.emplace_back(buffer_id, vsharp, size);
+           }
+       } else {
+           buffer_bindings.emplace_back(VideoCore::BufferId{}, vsharp, 0);
+       }
+   }
+   ```
+3. En el segundo bucle (`líneas 1192-1224`), cuando `buffer_id == kStreamFastPathId`, pasa `VideoCore::BufferId{}` a `ObtainBuffer` / `ObtainUniformBuffer` y **no llames a `vk_buffer->GetBarrier(...)`** (ya que `stream_buffer` es host-coherent y no necesita barreras de buffer):
+   ```cpp
+   const auto lookup_id = (buffer_id == kStreamFastPathId) ? VideoCore::BufferId{} : buffer_id;
+   const auto [vk_buffer, offset] =
+       is_storage ? buffer_cache.ObtainBuffer(vsharp.base_address, size, desc.is_written,
+                                              desc.is_formatted, lookup_id)
+                  : buffer_cache.ObtainUniformBuffer(vsharp.base_address, size, lookup_id);
+   const u32 offset_aligned = Common::AlignDown(offset, alignment);
+   const u32 adjust = offset - offset_aligned;
+   ASSERT(adjust % 4 == 0);
+   push_data.AddOffset(binding.buffer, adjust);
+   buffer_infos.emplace_back(vk_buffer->Handle(), offset_aligned, size + adjust);
+   if (buffer_id != kStreamFastPathId) {
+       bool first_for_buffer = true;
+       for (u32 j = 0; j < i; ++j) {
+           if (std::get<0>(buffer_bindings[j]) == buffer_id) {
+               first_for_buffer = false;
+               break;
+           }
+       }
+       if (first_for_buffer) {
+           bool any_written = desc.is_written;
+           for (u32 j = i + 1; j < buffer_bindings.size(); ++j) {
+               if (std::get<0>(buffer_bindings[j]) == buffer_id &&
+                   stage.buffers[j].is_written) {
+                   any_written = true;
+                   break;
+               }
+           }
+           if (auto barrier = vk_buffer->GetBarrier(
+                   any_written ? (vk::AccessFlagBits2::eShaderRead |
+                                  vk::AccessFlagBits2::eShaderWrite)
+                               : vk::AccessFlagBits2::eShaderRead,
+                   vk::PipelineStageFlagBits2::eAllCommands)) {
+               buffer_barriers.emplace_back(*barrier);
+           }
+       }
+   }
+   ```
+
+---
+
+### Optimización Paso 2 (IMPACTO MEDIO-ALTO EN GPU): Afinar `PipelineStageFlags2` en las barreras de Compute Shaders
+
+#### Diagnóstico exacto
+En [`src/src/video_core/renderer_vulkan/vk_rasterizer.cpp:1221`](file:///e:/DeracinePCVR/src/src/video_core/renderer_vulkan/vk_rasterizer.cpp#L1221), `BindBuffers` pasa siempre `vk::PipelineStageFlagBits2::eAllCommands` a `GetBarrier`.
+Cuando los 51 Compute Shaders de morph targets se ejecutan seguidos en `DispatchDirect()`, usar `eAllCommands` obliga a la GPU a vaciar **todas** las unidades del pipeline (incluyendo transferencias y rasterización previa) en cada uno de los 51 dispatches, en lugar de sincronizar únicamente la etapa `eComputeShader` entre un dispatch y el siguiente.
+
+#### Cómo implementarlo exactamente
+En [`src/src/video_core/renderer_vulkan/vk_rasterizer.cpp:1217-1223`](file:///e:/DeracinePCVR/src/src/video_core/renderer_vulkan/vk_rasterizer.cpp#L1217-L1223), usa `eComputeShader` cuando `stage.stage == Shader::Stage::Compute`:
+```cpp
+const auto dst_stage = (stage.stage == Shader::Stage::Compute)
+                           ? vk::PipelineStageFlagBits2::eComputeShader
+                           : vk::PipelineStageFlagBits2::eAllCommands;
+if (auto barrier = vk_buffer->GetBarrier(
+        any_written ? (vk::AccessFlagBits2::eShaderRead |
+                       vk::AccessFlagBits2::eShaderWrite)
+                    : vk::AccessFlagBits2::eShaderRead,
+        dst_stage)) {
+    buffer_barriers.emplace_back(*barrier);
+}
 ```
-HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.
-```
-
-### La Solución Implementada
-Un script en Python que intercepta la redirección y **elimina la cabecera `Authorization`** al conectar a Azure:
-```python
-# Ubicación: tools/download-artifact.py (o scratch/download_artifact.py)
-class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None  # Detiene la redirección automática
-
-# Captura el código 302, extrae e.headers.get("Location") y descarga desde Azure sin Authorization
-```
+*(Nota: `Buffer::GetBarrier` en `buffer.h:142-145` ya amplía automáticamente `dst_stage` a `eAllCommands` cuando `!dst_is_write`, por lo que la transición desde el último Compute Shader hacia el Vertex Shader sigue cubriendo todas las etapas gráficas sin perder seguridad).*
 
 ---
 
-## 5. Estado Actual del Repositorio
+### Optimización Paso 3 (IMPACTO EN FLUIDEZ Y CALIDAD VISUAL): Equilibrio entre MSAA y Resolución en `pc-vr/settings.txt`
 
-- **Rama actual**: `actualizacion-v0.21.0`
-- **Últimos commits**:
-  - `e5287acf`: `feat(bin): update pc-vr/shadps4.exe to v0.21.0` (Binario compilado de 60.29 MB colocado en `pc-vr/shadps4.exe`)
-  - `0965e6d4`: `fix(hmd): remove obsolete GuestCpu watchdog progress calls in hmd_reprojection`
-  - `7d9ca0a7`: `fix(build): restore VR libraries in CMakeLists.txt and inline NoteFrameDone in GpuProfile`
-  - `430ccf9a`: `fix(vulkan): update PostProcessingPass to use MaxPushDescriptors and CompileSPV for v0.21.0`
-  - `8870ed9c`: `fix(amdgpu): restore IsGpuThread and InGfxTask on Liverpool for present fence handling`
-  - `8ddafcde`: `fix(vulkan): stub DumpGpuImages and TraceSync, update splash loading for v0.21.0`
-- **Configuración activa en `pc-vr/settings.txt`**:
-  - `swap_hands=1` (Intacto)
-  - `readbacks=relaxed`
-  - Calibración 6DoF de mandos activa
+Si el usuario nota que en escenas pesadas todavía cuesta mantener los 60 FPS nativos en su GPU:
+1. **Probar `msaa=2` con `resolution=2340` y `sharpen=0.40`** en [`pc-vr/settings.txt`](file:///e:/DeracinePCVR/pc-vr/settings.txt):
+   - Pasar de `msaa=4` a `msaa=2` reduce a la mitad el coste de ancho de banda de memoria de todos los render targets MSAA y del paso de `Resolve()`, permitiendo subir la resolución vertical de `2160` a `2340` con **mejor tasa de fotogramas y más detalle real por píxel**.
+2. **Vista de escritorio (`desktop_view`)**:
+   - En [`pc-vr/settings.txt:31`](file:///e:/DeracinePCVR/pc-vr/settings.txt#L31), cambiar `desktop_view=stereo` a `desktop_view=spectator` ahorra composición en la ventana del monitor de PC sin afectar en nada a lo que se ve dentro del visor VR.
 
 ---
 
-## 6. Qué Debe Hacer el Siguiente Agente
+### Optimización Paso 4 (TIEMPOS DE CARGA E INICIO): Verificar la Caché de Pipelines en Disco
 
-Cuando el usuario pruebe el juego ejecutando `Play Deracine VR.bat`:
+En [`pc-vr/launch.ps1:931`](file:///e:/DeracinePCVR/pc-vr/launch.ps1#L931) ya hemos activado `pipeline_cache_enabled = $true` y dejado de borrar `pc-vr/user/cache/CUSA11919`.
+- **Importante**: La **primera** vez que se abre un nivel tras este cambio, el emulador compila los shaders y los guarda en `pc-vr/user/cache/CUSA11919`. A partir de la **segunda** vez que se abre el juego, lee esa caché directamente de disco y el tiempo de carga se reduce drásticamente.
+- Nunca vuelvas a añadir `Remove-Item ... user\cache\CUSA11919` en `launch.ps1` a menos que modifiques archivos dentro de `src/src/shader_recompiler/`.
 
-1. **Si el juego arranca y funciona**:
-   - Verificar estabilidad de FPS, sincronización estroboscópica/Vulkan en el visor.
-   - Comprobar que los mandos Move sigan respondiendo con la ergonomía calibrada (gatillos, giro snap, menú de objetos en botón X).
-   - Comprobar que las caras no sufran glitch de vértices (`readbacks=relaxed`).
-2. **Si el juego crashea o congela**:
-   - Solicitar o revisar el archivo de log generado en `pc-vr/user/log/shadps4.log`.
-   - Analizar si el fallo se produce en:
-     - **OpenXR Presentation / Vulkan**: Comprobar si alguno de los stubs en `vk_presenter.cpp` fue llamado durante la sesión de renderizado.
-     - **Memory / BufferCache**: Comprobar si `ObtainBuffer` o `ResolveDepthOverlap` requieren sincronización adicional en v0.21.0.
-     - **Liverpool / GPU Timeout**: Revisar `stall_log.h` si el hilo GPU se queda bloqueado esperando vblank o swapchain.
-3. **Flujo de Modificaciones y Recompilación**:
-   - Si se requiere modificar código C++ en `src/`:
-     1. Realizar el cambio mínimo necesario.
-     2. Hacer commit con el autor `26739250+stefan0704@users.noreply.github.com`.
-     3. Pushear a `actualizacion-v0.21.0`.
-     4. Esperar el build de GitHub Actions (workflow `build-windows.yml`).
-     5. Descargar el nuevo artefacto con `python tools/download-artifact.py`.
-     6. Probar de nuevo.
+---
+
+## 5. Flujo de Trabajo Resumido para el Modelo Ligero
+
+Cada vez que apliques uno de los pasos anteriores en `src/`:
+1. Verifica en qué rama estás (`git branch --show-current` debe ser `optimizacion-rendimiento-v0.21.0`).
+2. Aplica el cambio con `edit_file` (o un script Python en `scratch` si el archivo tiene saltos de línea CRLF).
+3. Haz commit y push:
+   ```powershell
+   git config user.name "stefan0704"; git config user.email "26739250+stefan0704@users.noreply.github.com"; git add -u; git commit -m "perf(vulkan): <descripcion>"; git push origin optimizacion-rendimiento-v0.21.0
+   ```
+4. Programa un temporizador con la herramienta `schedule` (`DurationSeconds: 660`) para esperar a que termine el workflow `Build Windows PCVR` en GitHub Actions.
+5. Comprueba el estado con `python "C:\Users\stefa\.gemini\antigravity\brain\82c36dc8-0d84-4abf-ad74-3d7c0e52f847\scratch\check_ci.py"` y, cuando marque `completed success`, descarga el binario actualizado ejecutando:
+   ```powershell
+   python tools/download-artifact.py
+   ```
+6. Pide al usuario que lo pruebe con `Play Deracine VR.bat`.
